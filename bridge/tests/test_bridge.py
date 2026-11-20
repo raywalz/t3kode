@@ -44,6 +44,9 @@ class FakeT3:
     def server_config(self):
         return {"settings": self.settings}
 
+    def vcs_status(self, cwd):
+        return {"isRepo": cwd != "/not-git", "refName": "main"}
+
     def environment(self):
         return {"serverVersion": "test", "orchestrationProtocolVersion": 2,
                 "capabilities": {"threadStop": True}}
@@ -544,6 +547,17 @@ class BridgeTests(unittest.TestCase):
         # A project override wins over the server-wide default.
         self.b.start_thread(render.short_id("p2"), "Other project", client_msg_id="n2")
         self.assertEqual(self.t3.calls[-1][2]["runtime_mode"], "approval-required")
+        self.assertIsNone(self.t3.calls[-1][2]["workspace"])  # no worktree default: the root
+
+    def test_start_thread_follows_worktree_default(self):
+        self.t3.settings["defaultThreadEnvMode"] = "worktree"
+        self.b.start_thread(render.short_id("p1"), "In a worktree", client_msg_id="w1")
+        self.assertEqual(self.t3.calls[-1][2]["workspace"],
+                         {"type": "worktree", "baseRef": "main", "startFromOrigin": True})
+        self.t3.settings["newWorktreesStartFromOrigin"] = False
+        self.t3.settings["projectSettingsOverrides"]["p2"]["defaultThreadEnvMode"] = "local"
+        self.b.start_thread(render.short_id("p2"), "Project says local", client_msg_id="w2")
+        self.assertIsNone(self.t3.calls[-1][2]["workspace"])
 
 
 class TokenTests(unittest.TestCase):

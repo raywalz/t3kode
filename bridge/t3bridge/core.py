@@ -807,10 +807,11 @@ class Bridge:
         elif t.get("activeRunId"):
             self.client.interrupt_run(t["id"], t["activeRunId"], command_id=_stable_id(cmid, "c"))
 
-    def new_thread_settings(self, pid: str, project: dict) -> tuple[dict, str]:
-        """(model selection, runtime mode) for a new thread, from the user's T3 settings,
-        the way the app picks them: the project's override, then the server-wide default.
-        Read fresh each time so a change made on the desktop applies at once."""
+    def new_thread_settings(self, pid: str, project: dict) -> tuple[dict, str, dict | None]:
+        """(model selection, runtime mode, workspace strategy) for a new thread, from the
+        user's T3 settings, the way the app picks them: the project's override, then the
+        server-wide default. Read fresh each time so a change made on the desktop applies
+        at once. The workspace is None for the project root."""
         settings = (self.client.server_config().get("settings") or {})
         override = (settings.get("projectSettingsOverrides") or {}).get(pid) or {}
         model = (override.get("defaultModelSelection") or project.get("defaultModelSelection")
@@ -825,7 +826,25 @@ class Bridge:
             raise BridgeError(409, "no default model is set in T3")
         # T3's own default when the setting is absent.
         runtime = override.get("defaultRuntimeMode") or settings.get("defaultRuntimeMode") or "full-access"
-        return model, runtime
+        env_mode = (override.get("defaultThreadEnvMode") or project.get("defaultThreadEnvMode")
+                    or settings.get("defaultThreadEnvMode") or "local")
+        workspace = None
+        if env_mode == "worktree":
+            workspace = self._new_worktree(project, settings.get("newWorktreesStartFromOrigin", True))
+        return model, runtime, workspace
+
+    def _new_worktree(self, project: dict, start_from_origin: bool) -> dict | None:
+        """A new worktree from the branch the project's checkout is on, as the app does.
+        Not a git repo: the root, as the app does too."""
+        root = project.get("workspaceRoot")
+        try:
+            status = self.client.vcs_status(root)
+        except Exception as e:
+            raise BridgeError(502, f"couldn't read the project's git branch: {e}") from None
+        if not status.get("isRepo"):
+            return None
+        return {"type": "worktree", "baseRef": status.get("refName") or "HEAD",
+                "startFromOrigin": bool(start_from_origin)}
 
     def settle(self, short: str, settled: bool = True) -> dict:
         """Settle a thread (mark it handled, out of the main list) or unsettle it."""
@@ -853,12 +872,12 @@ class Bridge:
             raise BridgeError(400, "text is empty")
 
         def act():
-            model, runtime = self.new_thread_settings(pid, p)
+            model, runtime, workspace = self.new_thread_settings(pid, p)
             title = " ".join(text.split())[:60]
             res = self.client.launch_thread(pid, title, text.strip(), model, runtime_mode=runtime,
                                             command_id=_stable_id(client_msg_id, "c"),
                                             message_id=_stable_id(client_msg_id, "m"),
-                                            generate_title=True)
+                                            generate_title=True, workspace=workspace)
             self.refresh()
             return self.thread_view(render.short_id(res["threadId"]))
 

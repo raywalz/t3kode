@@ -101,6 +101,10 @@ class T3Client:
         """Server config, including the user's settings (default model and runtime mode)."""
         return self.rpc("server.getConfig", {})
 
+    def vcs_status(self, cwd: str) -> dict:
+        """Git state of a checkout: isRepo, refName (the current branch), …"""
+        return self.rpc("vcs.refreshStatus", {"cwd": cwd})
+
     def thread_snapshot(self, thread_id: str) -> dict:
         """Full projection: runs, messages, runtimeRequests, turnItems, ..."""
         return self._http("GET", f"/api/orchestration/threads/{_q(thread_id)}")
@@ -184,8 +188,10 @@ class T3Client:
         command_id: str | None = None,
         message_id: str | None = None,
         generate_title: bool = False,
+        workspace: dict | None = None,
     ) -> dict:
-        """Create a thread in the project root and send its first message."""
+        """Create a thread and send its first message. `workspace` is T3's workspace
+        strategy ({"type": "worktree", "baseRef": …}); the project root when None."""
         return self.rpc(
             "orchestration.launchThread",
             {
@@ -197,7 +203,7 @@ class T3Client:
                 "modelSelection": model_selection,
                 "runtimeMode": runtime_mode,
                 "interactionMode": interaction_mode,
-                "workspaceStrategy": {"type": "root"},
+                "workspaceStrategy": workspace or {"type": "root"},
                 "initialMessage": {"messageId": message_id or new_id(), "text": text, "attachments": []},
             },
         )
