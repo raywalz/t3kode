@@ -23,7 +23,8 @@ Status: experimental, but in daily use on a Kobo Clara BW.
 - **Thread view** that reads well on e-ink: formatted messages (headings, lists,
   tables, code), tool calls collapsed into one-line markers, and finished turns folded
   into "Worked for 1m 12s" like T3's own apps. Tap a fold to see its steps, or a
-  subagent to open its thread.
+  subagent to open its thread. Images in replies and attachments show inline (shrunk
+  and grayscale when ImageMagick is installed); tap one to view it full screen.
 - **Replies:** T3's pending approvals (Allow / Allow for session / Decline) and questions
   (single or multiple choice) are buttons, answered the same way the desktop app
   answers them. After each turn, a small model suggests a few likely replies. Typed
@@ -59,7 +60,9 @@ cd bridge && python3 -m t3bridge
 `.env` needs at least:
 
 - `T3_TOKEN`: a scoped session token. Mint one with
-  `t3 auth session issue --scope orchestration:read --scope orchestration:operate --ttl 30d --token-only`.
+  `t3 auth session issue --scope orchestration:read --scope orchestration:operate --scope filesystem:read --ttl 30d --token-only`.
+  (`filesystem:read` lets the bridge show images that agent replies point to; leave it
+  out and those show as placeholders.)
   Set `T3_TOKEN_COMMAND` to that same command and the bridge renews the token by itself.
 - `BRIDGE_HOST` / `BRIDGE_TOKEN`: an address the e-reader can reach (a LAN or VPN
   address such as Tailscale's), and a secret for the device. The bridge refuses to listen

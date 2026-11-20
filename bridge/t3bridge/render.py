@@ -14,7 +14,7 @@ import re
 import shlex
 from datetime import datetime
 
-from .markdown import text_html, to_html
+from .markdown import image_placeholder, text_html, to_html
 
 LIVE_STATUSES = {"queued", "preparing", "starting", "running", "waiting"}
 
@@ -328,6 +328,22 @@ def fold_runs(items: list[dict], live_run: str | None = None,
     return out
 
 
+def _md_image(image_ref):
+    if not image_ref:
+        return None
+    return lambda src, alt: image_ref("path", src, alt)
+
+
+def _attachment_images(item: dict, image_ref) -> str:
+    out = []
+    for a in item.get("attachments") or []:
+        if not isinstance(a, dict) or a.get("type") != "image":
+            continue
+        name = a.get("name") or ""
+        out.append((image_ref and image_ref("attachment", a, name)) or image_placeholder(name))
+    return "".join(f"<p>{x}</p>" for x in out)
+
+
 _SUBAGENT_STATE = {"completed": "done", "failed": "failed", "cancelled": "stopped",
                    "interrupted": "stopped", "running": "working", "pending": "starting"}
 
@@ -350,9 +366,11 @@ def _subagent_entry(item: dict, child_info) -> dict:
     return entry
 
 
-def render_items(items: list[dict], child_info=None) -> list[dict]:
+def render_items(items: list[dict], child_info=None, image_ref=None) -> list[dict]:
     """Turn items → entries [{o, role: you|agent|tool|note|subagent|fold, text, html}],
     tool runs collapsed. `child_info` resolves subagent threads (see _subagent_entry).
+    `image_ref(kind, source, alt)` returns HTML for an image ("path": a file an agent
+    reply refers to; "attachment": an image attached to a message), or None.
 
     `o` is the ordinal of the entry's last item, so `o > cursor` finds new entries.
     In-progress assistant text is left out; it appears once it finishes.
@@ -396,21 +414,24 @@ def render_items(items: list[dict], child_info=None) -> list[dict]:
                 continue
             flush()
             entries.append({"o": o, "role": "agent", "text": clean_text(item["text"]),
-                            "html": to_html(item["text"])})
+                            "html": to_html(item["text"], image=_md_image(image_ref))})
         elif kind == "proposed_plan":
             if item.get("streaming"):
                 continue
             flush()
             plan = item.get("markdown", "")
             entries.append({"o": o, "role": "agent", "text": "Plan:\n" + clean_text(plan),
-                            "html": "<h4>Plan</h4>" + to_html(plan)})
+                            "html": "<h4>Plan</h4>" + to_html(plan, image=_md_image(image_ref))})
         elif kind == "user_message":
             text = item.get("text", "").strip()
-            if not text:
+            has_image = any(isinstance(a, dict) and a.get("type") == "image"
+                            for a in item.get("attachments") or [])
+            if not text and not has_image:
                 continue
             flush()
             if item.get("createdBy", "user") == "user":
-                entries.append({"o": o, "role": "you", "text": text, "html": text_html(text)})
+                entries.append({"o": o, "role": "you", "text": text,
+                                "html": text_html(text) + _attachment_images(item, image_ref)})
             else:
                 # Sent by an agent or by T3 (task prompts, wake-ups). Shown, but marked.
                 clipped = text if len(text) <= 600 else text[:599] + "…"

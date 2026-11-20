@@ -100,7 +100,9 @@ Same body as the list, plus `"changed": true|false`.
   subagent thread's live state). When its thread exists, the entry has `thread` (its id)
   and its `html` links to `t3:thread:<id>`. A subagent that's still working stays
   visible when its turn folds.
-- A subagent thread's view has `parent: {id, title}`; top-level threads have `parent: null`. A `tool` entry is one line covering
+- A subagent thread's view has `parent: {id, title}`; top-level threads have `parent: null`.
+- `images`: ids of the images in the shown entries (see `/v1/images`).
+- Very long threads, whose full transcript T3 refuses, show their most recent part. A `tool` entry is one line covering
   a run of consecutive tool calls. `note` covers notifications, errors, questions and
   their answers, and messages sent by agents rather than you.
 - Default window: everything from the `turns`-th most recent message of yours.
@@ -178,6 +180,22 @@ mode come from the project's overrides if it has any, otherwise from the
 server-wide defaults (Settings → default model / runtime mode). They're read
 fresh for every new thread, so changes made on the desktop apply immediately.
 T3 generates the title.
+
+### `GET /v1/images/<id>?w=<pixels>`
+
+The image bytes for an `id` from a thread view's `images` list. Only images that
+appeared in a view the bridge rendered can be fetched. The bridge gets them through
+T3's signed asset URLs (`assets.createUrl`), so T3's access rules apply: files an agent
+reply refers to need the bridge token's `filesystem:read` permission, while message
+attachments need only `orchestration:read`. Images on the web aren't fetched.
+
+With ImageMagick installed on the bridge machine, images are shrunk to at most `w`
+pixels wide and turned grayscale: PNG for screenshots, JPEG for photos. Without it, the
+original bytes are sent.
+
+In entry `html`, an image is `<a href="t3:img:<id>"><img src="t3img:<id>" alt="…"/></a>`.
+The device swaps `t3img:<id>` for its downloaded copy, or replaces the whole link with a
+placeholder.
 
 ### `GET /v1/health`
 

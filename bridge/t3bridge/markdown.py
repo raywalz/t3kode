@@ -19,19 +19,33 @@ _QUOTE = re.compile(r"^\s*>\s?(.*)$")
 _TABLE_SEP = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
 
 
-def inline(text: str) -> str:
-    """Escape, then apply inline markup. Code spans are protected from the rest."""
+_IMAGE = re.compile(r"!\[([^\]]*)\]\(<?((?:[^()\s<>]|\([^()]*\))+)>?(?:\s+\"[^\"]*\")?\)")
+
+
+def image_placeholder(alt: str) -> str:
+    return f"<i>[image{': ' + html.escape(alt, quote=False) if alt else ''}]</i>"
+
+
+def inline(text: str, image=None) -> str:
+    """Escape, then apply inline markup. Code spans and images are protected from the rest.
+
+    `image(src, alt)` returns the HTML for a markdown image, or None for a placeholder."""
     codes: list[str] = []
+
+    def stash_image(m: re.Match) -> str:
+        alt, src = m.group(1), m.group(2)
+        rendered = image(src, alt) if image else None
+        codes.append(rendered or image_placeholder(alt))
+        return f"\x00{len(codes) - 1}\x00"
+
 
     def stash(m: re.Match) -> str:
         codes.append(f"<code>{html.escape(m.group(1), quote=False)}</code>")
         return f"\x00{len(codes) - 1}\x00"
 
     text = re.sub(r"`([^`\n]+)`", stash, text)
+    text = _IMAGE.sub(stash_image, text)  # after code spans: an image in backticks is code
     text = html.escape(text, quote=False)
-    # ![alt](src): images can't be shown; say what was there.
-    text = re.sub(r"!\[([^\]]*)\]\((?:[^()\s]|\([^()]*\))+\)",
-                  lambda m: f"<i>[image{': ' + m.group(1) if m.group(1) else ''}]</i>", text)
     # [label](url): keep the label, drop the URL (links can't be followed on the device).
     text = re.sub(r"\[([^\]]+)\]\((?:[^()\s]|\([^()]*\))+\)", r"<u>\1</u>", text)
     text = re.sub(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1", r"<b>\2</b>", text)
@@ -69,7 +83,11 @@ def _render_list(items: list[tuple[int, bool, str]]) -> str:
     return "".join(out)
 
 
-def to_html(md: str) -> str:
+def to_html(md: str, image=None) -> str:
+    """Markdown → HTML. `image(src, alt)`: see inline()."""
+    def inline_(t: str) -> str:
+        return inline(t, image)
+
     lines = md.replace("\r\n", "\n").split("\n")
     out: list[str] = []
     para: list[str] = []
@@ -77,7 +95,7 @@ def to_html(md: str) -> str:
 
     def flush_para():
         if para:
-            out.append("<p>" + "<br/>".join(inline(p) for p in para) + "</p>")
+            out.append("<p>" + "<br/>".join(inline_(p) for p in para) + "</p>")
             para.clear()
 
     while i < len(lines):
@@ -102,7 +120,7 @@ def to_html(md: str) -> str:
         if heading:
             flush_para()
             level = min(len(heading.group(1)) + 2, 6)  # h3–h6: messages, not documents
-            out.append(f"<h{level}>{inline(heading.group(2))}</h{level}>")
+            out.append(f"<h{level}>{inline_(heading.group(2))}</h{level}>")
             i += 1
             continue
         if _HR.match(line):
@@ -118,9 +136,9 @@ def to_html(md: str) -> str:
             while i < len(lines) and "|" in lines[i] and lines[i].strip():
                 rows.append(_cells(lines[i]))
                 i += 1
-            t = ["<table><tr>" + "".join(f"<th>{inline(c)}</th>" for c in head) + "</tr>"]
+            t = ["<table><tr>" + "".join(f"<th>{inline_(c)}</th>" for c in head) + "</tr>"]
             for r in rows:
-                t.append("<tr>" + "".join(f"<td>{inline(c)}</td>" for c in r) + "</tr>")
+                t.append("<tr>" + "".join(f"<td>{inline_(c)}</td>" for c in r) + "</tr>")
             out.append("".join(t) + "</table>")
             continue
         if _QUOTE.match(line):
@@ -129,7 +147,7 @@ def to_html(md: str) -> str:
             while i < len(lines) and _QUOTE.match(lines[i]):
                 body.append(_QUOTE.match(lines[i]).group(1))
                 i += 1
-            out.append("<blockquote>" + to_html("\n".join(body)) + "</blockquote>")
+            out.append("<blockquote>" + to_html("\n".join(body), image) + "</blockquote>")
             continue
         if _LIST.match(line):
             flush_para()
@@ -138,12 +156,12 @@ def to_html(md: str) -> str:
                 m = _LIST.match(lines[i])
                 if m:
                     indent = len(m.group(1).expandtabs(4))
-                    items.append((indent, m.group(2)[0].isdigit(), inline(m.group(3))))
+                    items.append((indent, m.group(2)[0].isdigit(), inline_(m.group(3))))
                     i += 1
                 elif lines[i].strip() and lines[i].startswith((" ", "\t")) and items:
                     # Continuation line of the previous item.
                     ind, o, body = items[-1]
-                    items[-1] = (ind, o, body + " " + inline(lines[i].strip()))
+                    items[-1] = (ind, o, body + " " + inline_(lines[i].strip()))
                     i += 1
                 else:
                     break

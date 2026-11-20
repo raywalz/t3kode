@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 from .core import Bridge, BridgeError
+from .images import ImageError
 
 log = logging.getLogger("t3bridge.http")
 
@@ -46,6 +47,7 @@ def make_handler(bridge: Bridge, device_token: str):
         ("GET", re.compile(r"^/v1/threads/wait$"), "list_wait"),
         ("POST", re.compile(r"^/v1/threads$"), "start"),
         ("GET", re.compile(r"^/v1/projects$"), "projects"),
+        ("GET", re.compile(r"^/v1/images/(\w+)$"), "image"),
         ("GET", re.compile(r"^/v1/threads/(\w+)$"), "view"),
         ("GET", re.compile(r"^/v1/threads/(\w+)/wait$"), "wait"),
         ("POST", re.compile(r"^/v1/threads/(\w+)/reply$"), "reply"),
@@ -65,6 +67,14 @@ def make_handler(bridge: Bridge, device_token: str):
             self.send_header("content-type", "application/json; charset=utf-8")
             self.send_header("content-length", str(len(data)))
             self.send_header("cache-control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _send_bytes(self, data: bytes, ctype: str) -> None:
+            self.send_response(200)
+            self.send_header("content-type", ctype)
+            self.send_header("content-length", str(len(data)))
+            self.send_header("cache-control", "private, max-age=86400")
             self.end_headers()
             self.wfile.write(data)
 
@@ -98,8 +108,12 @@ def make_handler(bridge: Bridge, device_token: str):
                 match = pattern.match(url.path)
                 if m == method and match:
                     try:
-                        self._send(200, getattr(self, "r_" + name)(q, *match.groups()))
-                    except BridgeError as e:
+                        result = getattr(self, "r_" + name)(q, *match.groups())
+                        if isinstance(result, tuple):  # (bytes, content type)
+                            self._send_bytes(*result)
+                        else:
+                            self._send(200, result)
+                    except (BridgeError, ImageError) as e:
                         self._send(e.status, {"error": str(e)})
                     except Exception as e:
                         log.exception("request failed")
@@ -128,6 +142,9 @@ def make_handler(bridge: Bridge, device_token: str):
             body = bridge.thread_list(limit=_int(q, "limit", 8, 1, 200), project=project)
             body["changed"] = changed
             return body
+
+        def r_image(self, q, image_id):
+            return bridge.images.get(image_id, _int(q, "w", 1000, 64, 4000))
 
         def r_projects(self, q):
             return bridge.projects()

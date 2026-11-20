@@ -300,6 +300,20 @@ class BridgeTests(unittest.TestCase):
         rows = {t["id"] for p in self.b.thread_list()["projects"] for t in p["threads"]}
         self.assertIn(self.s1, rows)
 
+    def test_huge_thread_falls_back_to_recent_items(self):
+        from t3bridge.t3client import T3Error
+
+        def too_large(tid):
+            raise T3Error('HTTP 400: {"reason":"thread_transcript_too_large"}', status=400)
+
+        self.t3.thread_transcript = too_large
+        self.t3.thread_bounded = lambda tid: {"projection": {"visibleTurnItems": [
+            {"item": i} for i in CONVERSATION[-2:]]}}
+        self.t3.threads["t1"] = dict(self.t3.threads["t1"], itemCount=99)  # not the cached version
+        self.b.refresh()
+        v = self.b.thread_view(self.s1)
+        self.assertEqual([e["text"] for e in v["entries"]], ["Second", "Answer two"])
+
     def test_view_window_and_after(self):
         v = self.b.thread_view(self.s1, turns=1)
         self.assertEqual([e["text"] for e in v["entries"]], ["Second", "Answer two"])
@@ -528,6 +542,62 @@ class TokenTests(unittest.TestCase):
         self.assertEqual(c.token, "old")
         self.assertIn("expires", k.notice())
         self.assertIn("T3_TOKEN=old", self.env.read_text())
+
+
+class ImageTests(unittest.TestCase):
+    PNG = bytes.fromhex("89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+                        "1f15c4890000000d49444154789c6360f8cfc0f01f0005000201"
+                        "f2b9e0a20000000049454e44ae426082")  # 1x1 PNG
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self.dir = tempfile.TemporaryDirectory()
+        self.png = Path(self.dir.name) / "shot.png"
+        self.png.write_bytes(self.PNG)
+        self.t3 = FakeT3()
+        self.t3.base_url = ""
+        self.t3.rpc = lambda method, payload: {"relativeUrl": self.png.as_uri()}
+        self.t3.threads["t1"] = thread("t1", itemCount=2)
+        self.t3.items["t1"] = [
+            item(1, "user_message", text="", createdBy="user",
+                 attachments=[{"type": "image", "id": "att1", "name": "photo.jpg", "mimeType": "image/jpeg"}]),
+            item(2, "assistant_message", streaming=False,
+                 text=f"Here: ![screenshot]({self.png}) and ![web](https://x/y.png)"),
+        ]
+        self.b = Bridge(self.t3, None)
+        self.b.refresh()
+
+    def tearDown(self):
+        self.b.close()
+        self.dir.cleanup()
+
+    def test_view_lists_images_and_links_them(self):
+        v = self.b.thread_view(render.short_id("t1"))
+        self.assertEqual(len(v["images"]), 2)  # the attachment and the local file; not the web URL
+        self.assertIn('<img src="t3img:', v["entries"][0]["html"])  # image-only message still shown
+        self.assertIn("[image: web]", v["entries"][1]["html"])
+        self.assertIn('href="t3:img:', v["entries"][1]["html"])
+
+    def test_only_registered_images_are_served(self):
+        from t3bridge.images import ImageError
+        with self.assertRaises(ImageError):
+            self.b.images.get("unknown1", 800)
+        v = self.b.thread_view(render.short_id("t1"))
+        self.b.images.converter = None
+        data, ctype = self.b.images.get(v["images"][1], 800)
+        self.assertEqual((data, ctype), (self.PNG, "image/png"))
+
+    def test_converter_makes_grayscale_png(self):
+        import shutil
+        conv = shutil.which("magick") or shutil.which("convert")
+        if not conv:
+            self.skipTest("ImageMagick not installed")
+        v = self.b.thread_view(render.short_id("t1"))
+        self.b.images.converter = conv
+        data, ctype = self.b.images.get(v["images"][1], 800)
+        self.assertEqual(ctype, "image/png")
+        self.assertTrue(data.startswith(b"\x89PNG"))
 
 
 class HttpTests(unittest.TestCase):

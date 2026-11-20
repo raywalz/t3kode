@@ -109,6 +109,31 @@ function Api:requestWithRetry(method, path, params, body)
     return ok, result, code
 end
 
+--- Download to `filepath` (written to a temporary name first).
+--- Returns ok, error_or_content_type.
+function Api:download(path, params, filepath)
+    if not self:configured() then return false, "not configured" end
+    local tmp = filepath .. ".part"
+    local fh = io.open(tmp, "wb")
+    if not fh then return false, "can't write " .. tmp end
+    local request = {
+        url = self.base_url .. path .. query(params),
+        method = "GET",
+        sink = ltn12.sink.file(fh), -- closes the file when done
+        headers = {},
+    }
+    if self.token ~= "" then request.headers["Authorization"] = "Bearer " .. self.token end
+    socketutil:set_timeout(15, 60)
+    local code, headers = socket.skip(1, http.request(request))
+    socketutil:reset_timeout()
+    if code ~= 200 then
+        os.remove(tmp)
+        return false, "HTTP " .. tostring(code)
+    end
+    os.rename(tmp, filepath)
+    return true, type(headers) == "table" and headers["content-type"] or nil
+end
+
 function Api:threads(limit)
     return self:request("GET", "/v1/threads", { limit = limit or 8 })
 end

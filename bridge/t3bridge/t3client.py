@@ -105,6 +105,11 @@ class T3Client:
         """Full projection: runs, messages, runtimeRequests, turnItems, ..."""
         return self._http("GET", f"/api/orchestration/threads/{_q(thread_id)}")
 
+    def thread_bounded(self, thread_id: str) -> dict:
+        """A size-bounded snapshot: the most recent turn items (`projection.visibleTurnItems`),
+        plus a cursor for older history."""
+        return self._http("GET", f"/api/orchestration/threads/{_q(thread_id)}/bounded")
+
     def thread_transcript(self, thread_id: str) -> dict:
         """Ordered turn items (messages, tool calls, ...) with `position`."""
         return self._http("GET", f"/api/orchestration/threads/{_q(thread_id)}/transcript")

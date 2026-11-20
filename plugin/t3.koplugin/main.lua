@@ -8,6 +8,9 @@ All T3-specific work happens on the bridge; this plugin renders what it gets.
 --]]
 
 local ButtonDialog = require("ui/widget/buttondialog")
+local Device = require("device")
+local ImageViewer = require("ui/widget/imageviewer")
+local lfs = require("libs/libkoreader-lfs")
 local ConfirmBox = require("ui/widget/confirmbox")
 local DataStorage = require("datastorage")
 local Dispatcher = require("dispatcher")
@@ -412,6 +415,76 @@ function T3:openThread(id, page)
     self:showThread(view, page and { page = page } or nil)
 end
 
+-- ---------------------------------------------------------------------------
+-- images
+
+local function imageDir()
+    local dir = DataStorage:getDataDir() .. "/cache/t3-images"
+    if not lfs.attributes(dir, "mode") then
+        lfs.mkdir(DataStorage:getDataDir() .. "/cache")
+        lfs.mkdir(dir)
+    end
+    return dir
+end
+
+-- KOReader's image widgets go by file extension, so cached images keep one.
+local IMAGE_EXTS = { "png", "jpg", "gif", "webp" }
+local EXT_FOR_TYPE = { ["image/png"] = "png", ["image/jpeg"] = "jpg", ["image/gif"] = "gif",
+                       ["image/webp"] = "webp" }
+
+local function cachedImage(dir, id)
+    for _i, ext in ipairs(IMAGE_EXTS) do
+        local name = id .. "." .. ext
+        if lfs.attributes(dir .. "/" .. name, "mode") == "file" then return name end
+    end
+end
+
+--- Download the view's images that aren't cached yet (sized to the screen by the bridge).
+--- Returns { [id] = file name in imageDir() } for the ones available.
+function T3:fetchImages(view)
+    local have = {}
+    if type(view.images) ~= "table" or #view.images == 0 then return have end
+    local dir = imageDir()
+    self.image_failed = self.image_failed or {}
+    local width = Device.screen:getWidth()
+    local missing = {}
+    for _i, id in ipairs(view.images) do
+        id = str(id)
+        if id and id:match("^%w+$") then
+            local name = cachedImage(dir, id)
+            if name then
+                have[id] = name
+            elseif not self.image_failed[id] then
+                table.insert(missing, id)
+            end
+        end
+    end
+    if #missing == 0 then return have end
+    withBusy(_("Loading images…"), function()
+        for _i, id in ipairs(missing) do
+            local tmp = dir .. "/" .. id .. ".download"
+            local ok, ctype = self.api:download("/v1/images/" .. id, { w = width }, tmp)
+            local ext = ok and EXT_FOR_TYPE[(tostring(ctype or "")):match("^[^;%s]+")]
+            if ext then
+                os.rename(tmp, dir .. "/" .. id .. "." .. ext)
+                have[id] = id .. "." .. ext
+            else
+                os.remove(tmp)
+                logger.warn("t3: image", id, ok and ("unsupported type " .. tostring(ctype)) or ctype)
+                self.image_failed[id] = true -- don't retry on every redraw
+            end
+        end
+    end)
+    return have
+end
+
+function T3:showImage(id)
+    local dir = imageDir()
+    local name = cachedImage(dir, id)
+    if not name then return end
+    UIManager:show(ImageViewer:new{ file = dir .. "/" .. name, fullscreen = true, with_title_bar = false })
+end
+
 local function esc(text)
     return (tostring(text or ""):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
 end
@@ -420,7 +493,17 @@ local ROLE_LABEL = { you = _("You"), agent = _("Agent") }
 
 --- The thread as HTML. Entries arrive pre-rendered from the bridge (`html`);
 --- `text` is the plain fallback for older bridges.
-local function composeHtml(view)
+--- Swap the bridge's image references for downloaded copies, or a placeholder.
+local function placeImages(html, have)
+    return (html:gsub('<a href="t3:img:(%w+)"><img src="t3img:%1" alt="([^"]*)"/></a>', function(id, alt)
+        if have[id] then
+            return '<a href="t3:img:' .. id .. '"><img src="' .. have[id] .. '" alt="' .. alt .. '"/></a>'
+        end
+        return "<i>[" .. (alt ~= "" and alt or "image") .. "]</i>"
+    end))
+end
+
+local function composeHtml(view, have)
     local parts = {}
     if view.more_before == true then
         table.insert(parts, '<div class="more">' .. esc(_("⋯ Earlier messages: tap Older.")) .. "</div>")
@@ -428,6 +511,7 @@ local function composeHtml(view)
     for _i, e in ipairs(view.entries or {}) do
         local role = str(e.role) or "note"
         local body = str(e.html) or ("<p>" .. esc(str(e.text)) .. "</p>")
+        body = placeImages(body, have or {})
         local label = ROLE_LABEL[role]
         if role == "fold" then label = nil end
         table.insert(parts, '<div class="entry ' .. role .. '">'
@@ -526,7 +610,8 @@ function T3:showThread(view, opts)
     local viewer
     viewer = ThreadView:new{
         title = str(view.title) or _("Thread"),
-        html = composeHtml(view),
+        html = composeHtml(view, self:fetchImages(view)),
+        resource_dir = imageDir(),
         buttons = self:threadButtons(view),
         start_page = page,
         refresh = (opts.update and old) and "ui" or "full",
@@ -535,6 +620,8 @@ function T3:showThread(view, opts)
             if run then return self:toggleRun(view, run) end
             local child = uri:match("^t3:thread:(%w+)$")
             if child then return self:openChild(view, child) end
+            local image = uri:match("^t3:img:(%w+)$")
+            if image then return self:showImage(image) end
         end,
         close_callback = function()
             if self.viewer == viewer then
@@ -808,7 +895,8 @@ function T3:showOlder(view, before)
     local older_viewer
     older_viewer = ThreadView:new{
         title = T(_("%1 (earlier)"), str(view.title) or _("Thread")),
-        html = composeHtml(older),
+        html = composeHtml(older, self:fetchImages(older)),
+        resource_dir = imageDir(),
         buttons = {{
             {
                 text = _("Older"),

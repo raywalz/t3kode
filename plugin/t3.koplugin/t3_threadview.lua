@@ -43,6 +43,7 @@ hr { border: 0; border-top: 1px solid #888; margin: 0.5em 0; }
 .pending { border: 2px solid black; padding: 0.45em; margin-top: 0.6em; }
 .pending-title { font-weight: bold; margin-bottom: 0.25em; }
 .more { color: #444; font-size: 0.85em; text-align: center; margin-bottom: 0.8em; }
+img { max-width: 100%; }
 a { color: black; text-decoration: none; }
 .fold { border: 1px solid #888; padding: 0.25em 0.5em; color: #333; font-size: 0.9em; }
 .fold p { margin: 0; }
@@ -58,6 +59,7 @@ local ThreadView = InputContainer:extend{
     refresh = "full", -- e-ink refresh on show: "full" flashes to clear ghosting, "ui" doesn't
     close_callback = nil,
     link_callback = nil, -- function(uri) for taps on links in the HTML
+    resource_dir = nil, -- folder that <img src="name"> in the HTML is relative to
     covers_fullscreen = true,
 }
 
@@ -90,6 +92,7 @@ function ThreadView:init()
         width = self.width - 2 * pad,
         height = html_height,
         dialog = self,
+        html_resource_directory = self.resource_dir,
         html_link_tapped_callback = self.link_callback and function(link)
             if type(link) == "table" and type(link.uri) == "string" then self.link_callback(link.uri) end
         end or nil,

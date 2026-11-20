@@ -25,7 +25,8 @@ Rules:
 def _transcript_for_prompt(entries: list[dict], max_chars: int = 6000) -> str:
     lines = []
     for e in entries:
-        who = {"you": "User", "agent": "Agent", "tool": "Agent tools", "note": "Note"}[e["role"]]
+        who = {"you": "User", "agent": "Agent", "tool": "Agent tools", "subagent": "Subagent",
+               "fold": "Agent work"}.get(e["role"], "Note")
         lines.append(f"{who}: {e['text']}")
     text = "\n\n".join(lines)[-max_chars:]
     return f"<transcript>\n{text}\n</transcript>\n\nReply with the JSON array only."

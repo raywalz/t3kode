@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 import uuid
@@ -17,7 +18,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from . import render
-from .t3client import pending_requests_from
+from .images import Images
+from .t3client import T3Error, pending_requests_from
 
 log = logging.getLogger("t3bridge")
 
@@ -104,10 +106,11 @@ def _is_subagent(t: dict) -> bool:
 
 class Bridge:
     def __init__(self, client, suggester=None, *, poll_fast: float = 2.0, poll_slow: float = 20.0,
-                 token_keeper=None):
+                 token_keeper=None, images: Images | None = None):
         self.client = client
         self.suggester = suggester
         self.token_keeper = token_keeper
+        self.images = images or Images(client)
         self.poll_fast = poll_fast
         self.poll_slow = poll_slow
         self.cond = threading.Condition()
@@ -269,7 +272,14 @@ class Bridge:
         cached = self.entries.get(t["id"])
         if cached and cached[0] == sig:
             return cached[1], cached[2]
-        items = [e["item"] for e in self.client.thread_transcript(t["id"])["items"]]
+        try:
+            rows = self.client.thread_transcript(t["id"])["items"]
+        except T3Error as e:
+            # T3 refuses whole transcripts past a size limit; show the recent part instead.
+            if e.status != 400 or "too_large" not in str(e):
+                raise
+            rows = self.client.thread_bounded(t["id"])["projection"]["visibleTurnItems"]
+        items = [e["item"] for e in rows]
         entries = render.render_items(items)
         self.entries[t["id"]] = (sig, items, entries)
         return items, entries
@@ -365,8 +375,9 @@ class Bridge:
         if state in ("working", "needs_you"):
             live_run = t.get("activeRunId") or next(
                 (it.get("runId") for it in reversed(items) if it.get("runId")), None)
-        entries = render.render_items(render.fold_runs(items, live_run, frozenset(expand)),
-                                      child_info=self._child_info)
+        entries = render.render_items(
+            render.fold_runs(items, live_run, frozenset(expand)), child_info=self._child_info,
+            image_ref=lambda kind, src, alt: self.images.ref(t["id"], kind, src, alt))
 
         if after is not None:
             shown = [e for e in entries if e["o"] > after]
@@ -395,6 +406,9 @@ class Bridge:
                        if parent and _is_subagent(t) else None),
             "cursor": cursor, "more_before": more_before, "entries": shown,
             "pending": pending_view, "replies": replies, "typed": typed,
+            # Images in the shown entries, for the device to fetch from /v1/images/<id>.
+            "images": list(dict.fromkeys(
+                i for e in shown for i in re.findall(r'src="t3img:(\w+)"', e.get("html", "")))),
         }
         body["v"] = _content_version(body, progress)
         return body
