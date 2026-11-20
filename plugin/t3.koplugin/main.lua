@@ -93,6 +93,11 @@ function T3:showProgress()
     return self.settings:nilOrTrue("show_progress")
 end
 
+--- Start each of your messages at the top of a page (on unless turned off).
+function T3:pageBreakYou()
+    return self.settings:nilOrTrue("page_break_you")
+end
+
 function T3:progressParam()
     return self:showProgress() and 1 or nil
 end
@@ -142,6 +147,15 @@ function T3:showSettings()
                     or _("Show progress while working: off"),
                 callback = function()
                     self.settings:saveSetting("show_progress", not self:showProgress())
+                    self.settings:flush()
+                    reopen()
+                end,
+            }},
+            {{
+                text = self:pageBreakYou() and _("Your messages start a new page: on")
+                    or _("Your messages start a new page: off"),
+                callback = function()
+                    self.settings:saveSetting("page_break_you", not self:pageBreakYou())
                     self.settings:flush()
                     reopen()
                 end,
@@ -667,7 +681,7 @@ local function anchorIndex(view, old)
     return #entries
 end
 
-local function composeHtml(view, have, anchor)
+local function composeHtml(view, have, anchor, page_break_you)
     local parts = {}
     if view.more_before == true then
         table.insert(parts, '<div class="more"><a href="t3:older">' .. esc(_("⋯ Show earlier messages")) .. "</a></div>")
@@ -680,7 +694,9 @@ local function composeHtml(view, have, anchor)
         if role == "fold" then label = nil end
         label = label and esc(label)
         if label and i == anchor then label = '<a href="' .. ANCHOR .. '">' .. label .. "</a>" end
-        table.insert(parts, '<div class="entry ' .. role .. '">'
+        -- Optionally each of your messages starts a new page, so a turn reads from the top.
+        local newpage = (page_break_you and role == "you" and i > 1) and " newpage" or ""
+        table.insert(parts, '<div class="entry ' .. role .. newpage .. '">'
             .. (label and ('<div class="label">' .. label .. "</div>") or "")
             .. body .. "</div>")
     end
@@ -826,7 +842,7 @@ function T3:showThread(view, opts)
     local viewer
     viewer = ThreadView:new{
         title = str(view.title) or _("Thread"),
-        html = composeHtml(view, self:fetchImages(view), anchor),
+        html = composeHtml(view, self:fetchImages(view), anchor, self:pageBreakYou()),
         resource_dir = imageDir(),
         buttons = self:threadButtons(view),
         start_page = page,
@@ -1231,7 +1247,7 @@ function T3:showOlder(view, before)
     local older_viewer
     older_viewer = ThreadView:new{
         title = T(_("%1 (earlier)"), str(view.title) or _("Thread")),
-        html = composeHtml(older, self:fetchImages(older)),
+        html = composeHtml(older, self:fetchImages(older), nil, self:pageBreakYou()),
         resource_dir = imageDir(),
         link_callback = function(uri)
             if uri == "t3:older" then

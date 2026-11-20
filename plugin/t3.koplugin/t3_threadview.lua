@@ -36,6 +36,7 @@ th, td { border: 1px solid #888; padding: 0.15em 0.35em; text-align: left; verti
 hr { border: 0; border-top: 1px solid #888; margin: 0.5em 0; }
 .entry { margin: 0 0 0.9em 0; }
 .you { border-left: 4px solid black; padding-left: 0.5em; }
+.newpage { page-break-before: always; }
 .label { font-weight: bold; font-size: 0.8em; margin-bottom: 0.15em; }
 .tool, .note { color: #444; font-size: 0.85em; }
 .tool p, .note p { margin: 0; }
