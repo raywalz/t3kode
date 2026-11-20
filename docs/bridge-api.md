@@ -129,6 +129,20 @@ Same body as the list, plus `"changed": true|false`.
  "options": [{"label": "Red", "description": "Choose red."}, ...]}
 ```
 
+{"kind": "secret", "header": "API key", "text": "<the agent's reason>", "link": "https://…",
+ "placeholder": null, "note": "Stored securely, never shown to the agent"}
+```
+
+A `secret` request comes from T3's request_secret tool. Its buttons are **Enter secret**
+(`kind: "secret"`: ask for the value in a masked box and send it to `/v1/threads/<id>/secret`)
+and **Decline** (an ordinary reply). While one is pending, `typed` is `none`, so typed text
+can't end up in the chat.
+
+```jsonc
+// (other pending kinds, continued)
+{"kind": "unknown"}
+```
+
 `note` may also say the request has to be answered on another device (for
 example, one that can't be resumed). Then there are no buttons.
 
@@ -167,6 +181,14 @@ a question is added to whatever is ticked.
 `{"settled": true}` settles the thread, like Settle in the app: it leaves the main list.
 `{"settled": false}` unsettles it. Returns `{"ok": true, "settled": …}` once the change
 shows in T3.
+
+### `POST /v1/threads/<id>/secret`
+
+`{"secret": "<value>"}` answers the thread's pending secret request; `{"decline": true}`
+declines it. The bridge passes the value straight to T3 (`secrets.answerRequest`), which
+stores it the way the desktop does; the thread only learns "saved". The bridge doesn't
+log or keep the value, and its error messages never include it. Not retried: send it once.
+Returns the new thread view.
 
 ### `POST /v1/threads`
 

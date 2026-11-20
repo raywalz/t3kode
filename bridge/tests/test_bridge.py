@@ -70,6 +70,16 @@ class FakeT3:
     def respond_user_input(self, *a, **kw):
         return self._record("respond_user_input", *a, **kw)
 
+    def answer_secret(self, tid, item_id, answer):
+        if getattr(self, "secret_error", None):
+            raise RuntimeError(self.secret_error)
+        for it in self.items.get(tid, []):
+            if it.get("id") == item_id:
+                it["secretStatus"] = "saved" if answer["type"] == "save" else "declined"
+        self.threads[tid] = dict(self.threads[tid], pendingRuntimeRequest=None, status="running",
+                                 itemCount=self.threads[tid]["itemCount"] + 1)
+        return self._record("answer_secret", tid, item_id, answer)
+
     def settle_thread(self, tid):
         self.threads[tid] = dict(self.threads[tid], settledOverride="settled")
         return self._record("settle_thread", tid)
@@ -313,6 +323,45 @@ class BridgeTests(unittest.TestCase):
         self.b.refresh()
         v = self.b.thread_view(self.s1)
         self.assertEqual([e["text"] for e in v["entries"]], ["Second", "Answer two"])
+
+    def _ask_secret(self):
+        self.t3.items["t1"] = list(CONVERSATION) + [item(3000001, "secret_request", id="sec-1", status="waiting",
+            secretStatus="pending", label="API key", reason="Needed for the deploy, see https://example.com/keys.",
+            delivery="file")]
+        self.t3.threads["t1"] = thread("t1", status="running", itemCount=9,
+                                       pendingRuntimeRequest={"id": "sec-1", "kind": "user_input"})
+        self.b.refresh()
+
+    def test_secret_request_view(self):
+        self._ask_secret()
+        v = self.b.thread_view(self.s1)
+        self.assertEqual((v["state"], v["typed"]), ("needs_you", "none"))  # no typing into chat
+        self.assertEqual(v["pending"]["header"], "API key")
+        self.assertEqual(v["pending"]["link"], "https://example.com/keys")
+        self.assertIn("private file", v["pending"]["note"])  # delivery: file
+        self.assertEqual([r["label"] for r in v["replies"]], ["Enter secret", "Decline", "Stop"])
+        self.assertNotIn("secret", " ".join(e["text"].lower() for e in v["entries"]))  # box only
+
+    def test_secret_save_and_decline(self):
+        self._ask_secret()
+        v = self.b.answer_secret(self.s1, "  hunter2  ")
+        self.assertEqual(self.t3.calls[-1][1], ("t1", "sec-1", {"type": "save", "secret": "hunter2"}))
+        self.assertIn("Secret saved: API key", [e["text"] for e in v["entries"]])
+        self._ask_secret()
+        decline = self.b.thread_view(self.s1)["replies"][1]["id"]
+        self.b.reply(self.s1, reply_id=decline)
+        self.assertEqual(self.t3.calls[-1][1], ("t1", "sec-1", {"type": "decline"}))
+
+    def test_secret_errors_never_echo_the_value(self):
+        self._ask_secret()
+        self.t3.secret_error = 'failed: {"reason": "already_answered", "secret": "hunter2"}'
+        with self.assertRaises(BridgeError) as cm:
+            self.b.answer_secret(self.s1, "hunter2")
+        self.assertEqual(str(cm.exception), "This secret request was already answered.")
+        self.t3.secret_error = "boom hunter2"
+        with self.assertRaises(BridgeError) as cm:
+            self.b.answer_secret(self.s1, "hunter2")
+        self.assertNotIn("hunter2", str(cm.exception))
 
     def test_view_window_and_after(self):
         v = self.b.thread_view(self.s1, turns=1)

@@ -163,6 +163,12 @@ function Api:reply(id, reply_id, text, progress, expand)
     })
 end
 
+--- Answer a secret request. Not retried: a retry after a lost reply would be refused as
+--- already answered. The value is only in this request's body.
+function Api:answerSecret(id, secret)
+    return self:request("POST", "/v1/threads/" .. id .. "/secret", nil, { secret = secret })
+end
+
 function Api:settle(id, settled)
     return self:requestWithRetry("POST", "/v1/threads/" .. id .. "/settle", nil, { settled = settled })
 end

@@ -219,7 +219,15 @@ def _note(item: dict) -> str | None:
     if kind == "run_interrupt_result":
         return "Stopped"
     if kind == "secret_request":
-        return f"Asked for a secret ({item.get('label', 'value')}). Answer it on another device."
+        label = item.get("label", "a secret")
+        status = item.get("secretStatus")
+        if status == "saved":
+            return f"Secret saved: {label}"
+        if status == "declined":
+            return f"Declined to give a secret: {label}"
+        if status == "pending" and (item.get("_visibility") or "local") != "local":
+            return f"Asked for a secret ({label}). Answer it in the thread that asked."
+        return f"Asked for a secret: {label}"
     if kind == "link_request":
         return "Asked to link an environment. Answer it on another device."
     if kind == "handoff":
@@ -326,6 +334,21 @@ def fold_runs(items: list[dict], live_run: str | None = None,
                 continue
             out.append(it)
     return out
+
+
+_REASON_LINK = re.compile(r"`(https?://[^`\s]+)`|<(https?://[^>\s]+)>|\]\((https?://[^)\s]+)\)|"
+                          r"(https?://[^\s<>\"'`\[\]]+)", re.I)
+
+
+def secret_request_link(item: dict) -> str | None:
+    """The page a secret request points to: its url, or the single link in its reason
+    (like T3's secretRequestLink). http(s) only."""
+    url = item.get("url")
+    if not url:
+        found = {next(g for g in m.groups() if g).rstrip(".,;:!?)")
+                 for m in _REASON_LINK.finditer(item.get("reason") or "")}
+        url = found.pop() if len(found) == 1 else None
+    return url if url and re.match(r"^https?://[^/\s]+", url) else None
 
 
 def _md_image(image_ref):
@@ -494,6 +517,9 @@ def render_items(items: list[dict], child_info=None, image_ref=None) -> list[dic
                 entries.append({"o": o, "role": "note", "text": clipped, "html": text_html(clipped)})
         else:
             open_ = item.get("status") in ("idle", "pending", "running", "waiting")
+            if kind == "secret_request" and item.get("secretStatus") == "pending" and \
+                    (item.get("_visibility") or "local") == "local":
+                continue  # the view's "Needs you" box asks for it
             if open_ and (kind == "approval_request" or (
                     kind == "user_input_request" and not (item.get("questionAnswer") or {}).get("answers"))):
                 continue  # still waiting: the view's "Needs you" box shows it

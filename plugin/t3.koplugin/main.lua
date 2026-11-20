@@ -545,6 +545,9 @@ local function composeHtml(view, have)
         local step = str(p.step)
         table.insert(lines, "<p>" .. (head and ("<b>" .. esc(head) .. ":</b> ") or "") .. esc(str(p.text))
             .. (step and (" (" .. esc(step) .. ")") or "") .. "</p>")
+        if str(p.link) then
+            table.insert(lines, "<p>" .. esc(_("Page:")) .. " " .. esc(str(p.link)) .. "</p>")
+        end
         if str(p.note) then table.insert(lines, "<p><i>" .. esc(str(p.note)) .. "</i></p>") end
         local opts = {}
         for _i, o in ipairs(type(p.options) == "table" and p.options or {}) do
@@ -573,10 +576,15 @@ function T3:threadButtons(view)
         local button = {
             text = SHORT_LABELS[id] or str(r.label) or id,
             enabled = r.enabled ~= false,
-            callback = function() self:sendReply(view, id, r.kind == "toggle") end,
+            callback = function()
+                if r.kind == "secret" then return self:enterSecret(view) end
+                self:sendReply(view, id, r.kind == "toggle")
+            end,
         }
         if r.kind == "shortcut" then
             table.insert(shortcuts, button)
+        elseif r.kind == "secret" then
+            table.insert(answers, 1, button) -- Enter secret, then Decline, in one row
         elseif r.kind == "answer" and #(str(r.label) or "") <= 18 then
             table.insert(answers, button) -- short answers (Allow / Decline) share a row
         else
@@ -789,6 +797,49 @@ function T3:typeReply(view)
             end
         end,
     }
+end
+
+--- Ask for the value of a secret request in a masked box. The value goes to the bridge
+--- in one request and isn't kept anywhere on the device.
+function T3:enterSecret(view)
+    local p = type(view.pending) == "table" and view.pending or {}
+    local dialog
+    dialog = InputDialog:new{
+        title = str(p.header) or _("Secret"),
+        description = str(p.text),
+        input = "",
+        input_hint = str(p.placeholder) or _("Secret"),
+        text_type = "password",
+        buttons = {{
+            { text = _("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
+            {
+                text = _("Save"),
+                is_enter_default = true,
+                callback = function()
+                    local secret = dialog:getInputText()
+                    if not secret:match("%S") then return end
+                    UIManager:close(dialog)
+                    local ok, result = withBusy(_("Saving…"), function()
+                        return self.api:answerSecret(view.id, secret)
+                    end)
+                    secret = nil
+                    if ok then
+                        self:showThread(result, { update = true, page = math.huge })
+                    else
+                        notify(result)
+                        self:reloadThread(view.id)
+                    end
+                end,
+            },
+        }},
+    }
+    dialog.onCloseWidget = function(d)
+        InputDialog.onCloseWidget(d)
+        self:endTyping()
+    end
+    self.typing = true -- hold background redraws while the box is open
+    UIManager:show(dialog)
+    dialog:onShowKeyboard()
 end
 
 --- A text box that grows with its text (up to the space above the keyboard, then it

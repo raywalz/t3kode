@@ -52,6 +52,7 @@ def make_handler(bridge: Bridge, device_token: str):
         ("GET", re.compile(r"^/v1/threads/(\w+)/wait$"), "wait"),
         ("POST", re.compile(r"^/v1/threads/(\w+)/reply$"), "reply"),
         ("POST", re.compile(r"^/v1/threads/(\w+)/settle$"), "settle"),
+        ("POST", re.compile(r"^/v1/threads/(\w+)/secret$"), "secret"),
     ]
 
     class Handler(BaseHTTPRequestHandler):
@@ -168,6 +169,15 @@ def make_handler(bridge: Bridge, device_token: str):
             return bridge.reply(short, reply_id=b.get("reply"), text=b.get("text"),
                                 client_msg_id=b.get("client_msg_id"), progress=bool(b.get("progress")),
                                 expand=frozenset(x for x in b.get("expand") or [] if isinstance(x, str)))
+
+        def r_secret(self, q, short):
+            b = self._body()
+            if b.get("decline") is True:
+                return bridge.answer_secret(short, None)
+            secret = b.get("secret")
+            if not isinstance(secret, str):
+                raise BridgeError(400, "send `secret` or `decline: true`")
+            return bridge.answer_secret(short, secret)
 
         def r_settle(self, q, short):
             b = self._body()

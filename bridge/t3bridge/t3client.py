@@ -223,6 +223,11 @@ class T3Client:
     def delete_thread(self, thread_id: str) -> dict:
         return self.dispatch({"type": "thread.delete", "threadId": thread_id})
 
+    def answer_secret(self, thread_id: str, turn_item_id: str, answer: dict):
+        """Answer a request_secret card: {"type": "save", "secret": ...} or {"type": "decline"}."""
+        return self.rpc("secrets.answerRequest",
+                        {"threadId": thread_id, "turnItemId": turn_item_id, "answer": answer})
+
     def settle_thread(self, thread_id: str) -> dict:
         """Mark a thread handled, as the app's Settle does."""
         return self.dispatch({"type": "thread.settle", "threadId": thread_id})

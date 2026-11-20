@@ -86,6 +86,23 @@ def _content_version(body: dict, progress: bool) -> str:
     return hashlib.sha1(raw).hexdigest()[:12]
 
 
+_SECRET_REASONS = {
+    "not_found": "This secret request no longer exists.",
+    "already_answered": "This secret request was already answered.",
+    "agent_stopped": "The agent that asked has stopped, so this secret can't be used.",
+    "store_failed": "T3 couldn't store the secret.",
+}
+
+
+def _secret_error(e: Exception) -> str:
+    """A safe message for a failed answer: T3's reason, nothing from the request body."""
+    text = str(e)
+    for reason, message in _SECRET_REASONS.items():
+        if f'"{reason}"' in text:
+            return message
+    return "T3 didn't accept the answer."
+
+
 def _is_settled(t: dict) -> bool:
     return t.get("settledOverride") == "settled"
 
@@ -279,7 +296,8 @@ class Bridge:
             if e.status != 400 or "too_large" not in str(e):
                 raise
             rows = self.client.thread_bounded(t["id"])["projection"]["visibleTurnItems"]
-        items = [e["item"] for e in rows]
+        # Keep each row's visibility: an inherited request can only be answered where it was asked.
+        items = [dict(e["item"], _visibility=e.get("visibility")) for e in rows]
         entries = render.render_items(items)
         self.entries[t["id"]] = (sig, items, entries)
         return items, entries
@@ -415,9 +433,21 @@ class Bridge:
 
     # ---- reply buttons ------------------------------------------------------
 
+    def _pending_secret(self, t: dict) -> dict | None:
+        """The secret request this thread is waiting on, if any (T3's request_secret tool)."""
+        items, _ = self._load(t)
+        for it in reversed(items):
+            if (it.get("type") == "secret_request" and it.get("secretStatus") == "pending"
+                    and (it.get("_visibility") or "local") == "local"):
+                return it
+        return None
+
     def _replies(self, t: dict, state: str, cursor: int):
         """(pending description, buttons, what typed text does)."""
         if state == "needs_you":
+            secret = self._pending_secret(t)
+            if secret is not None:
+                return self._secret_replies(secret)
             pending = self._pending(t)
             if pending:
                 return self._pending_replies(pending[0])
@@ -434,6 +464,42 @@ class Bridge:
         for key, (label, _) in SHORTCUTS.items():
             buttons.append({"id": f"c:{key}", "label": label, "kind": "shortcut"})
         return None, buttons, "message"
+
+    def _secret_replies(self, item: dict):
+        sid = render.short_id(item["id"])
+        view = {"kind": "secret", "header": item.get("label") or "Secret",
+                "text": item.get("reason") or "", "placeholder": item.get("placeholder"),
+                # As T3's own card says (client-runtime secretRequestPrivacyNote):
+                "note": ("Kept out of chat, in a private file this agent's commands can read for 24 hours"
+                         if item.get("delivery") == "file" else "Stored securely, never shown to the agent")}
+        link = render.secret_request_link(item)
+        if link:
+            view["link"] = link
+        buttons = [{"id": f"x:{sid}:enter", "label": "Enter secret", "kind": "secret"},
+                   {"id": f"x:{sid}:decline", "label": "Decline", "kind": "answer"},
+                   {"id": "c:stop", "label": "Stop", "kind": "shortcut"}]
+        # "none": typed text must never go to the chat while a secret is being asked for.
+        return view, buttons, "none"
+
+    def answer_secret(self, short: str, secret: str | None) -> dict:
+        """Give the pending secret request its value (or decline it with None).
+        The value goes straight to T3, which stores it; it's never logged or kept here."""
+        self.last_device_at = time.monotonic()
+        t = self._thread(short)
+        item = self._pending_secret(t)
+        if item is None:
+            raise BridgeError(409, "no secret is being asked for")
+        if secret is not None and not secret.strip():
+            raise BridgeError(400, "the secret is empty")
+        answer = {"type": "decline"} if secret is None else {"type": "save", "secret": secret.strip()}
+        try:
+            self.client.answer_secret(t["id"], item["id"], answer)
+        except Exception as e:
+            # T3's error names a reason (e.g. already answered), never the value.
+            raise BridgeError(409, _secret_error(e)) from None
+        before = _wake_key(t)
+        self._settle(t["id"], before)
+        return self.thread_view(short)
 
     def _pending_replies(self, p: dict):
         req, item = p["request"], p["item"] or {}
@@ -628,6 +694,15 @@ class Bridge:
                 raise BridgeError(409, "that suggestion is out of date")
             self.client.send_message(tid, sug["items"][int(idx)], command_id=_stable_id(cmid, "c"),
                                      message_id=_stable_id(cmid, "m"))
+            return
+        elif kind == "x":
+            sid, _, action = rest.partition(":")
+            item = self._pending_secret(t)
+            if item is None or render.short_id(item["id"]) != sid:
+                raise BridgeError(409, "that secret request was already answered")
+            if action != "decline":
+                raise BridgeError(400, "send the secret to /v1/threads/<id>/secret")
+            self.client.answer_secret(tid, item["id"], {"type": "decline"})
             return
         elif kind in ("a", "q", "m", "d"):
             pending = self._pending(t)
