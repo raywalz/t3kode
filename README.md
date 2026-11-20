@@ -19,7 +19,8 @@ Status: experimental, but in daily use on a Kobo Clara BW.
 
 - **Thread list** grouped by project, marked *needs you*, *working*, *done*, or *failed*,
   with unread threads in bold. Subagent threads live under their parent, which shows
-  when one of them needs you.
+  when one of them needs you. Hold a thread to pin it (pinned threads go on top), snooze
+  it, mark it unread, settle it, or archive it, as in the app's thread menu.
 - **Thread view** that reads well on e-ink: formatted messages (headings, lists,
   tables, code), tool calls collapsed into one-line markers, and finished turns folded
   into "Worked for 1m 12s" like T3's own apps. Tap a fold to see its steps, or a

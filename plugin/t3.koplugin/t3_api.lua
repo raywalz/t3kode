@@ -174,6 +174,13 @@ function Api:settle(id, settled)
     return self:requestWithRetry("POST", "/v1/threads/" .. id .. "/settle", nil, { settled = settled })
 end
 
+--- Pin, unpin, snooze, unsnooze, mark_unread or archive a thread. `snooze`: a preset
+--- (hour, three-hours, evening, tomorrow, next-week), for "snooze".
+function Api:threadAction(id, action, snooze)
+    return self:requestWithRetry("POST", "/v1/threads/" .. id .. "/action", nil,
+        { action = action, snooze = snooze })
+end
+
 --- `model`: an id from Api:models(), or nil for the project's default.
 --- `mode`: "plan" starts it in plan mode.
 function Api:startThread(project_id, text, model, mode)

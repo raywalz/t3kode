@@ -241,6 +241,11 @@ class T3Client:
         return self.dispatch({"type": "thread.interaction-mode.set", "commandId": command_id or new_id(),
                               "threadId": thread_id, "interactionMode": mode})
 
+    def thread_command(self, type_: str, thread_id: str, **fields) -> dict:
+        """A simple thread command: thread.pin, thread.unpin, thread.snooze (snoozedUntil),
+        thread.unsnooze (reason), thread.mark-unread, thread.archive."""
+        return self.dispatch({"type": type_, "commandId": new_id(), "threadId": thread_id, **fields})
+
     def delete_thread(self, thread_id: str) -> dict:
         return self.dispatch({"type": "thread.delete", "threadId": thread_id})
 

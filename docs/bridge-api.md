@@ -57,13 +57,38 @@ An optional `notice` (string) reports a problem with the bridge itself, such as 
 token expiring within a week without a T3_TOKEN_COMMAND to renew it. Show it prominently.
 
 Like the desktop inbox, the main list leaves out settled threads unless they need you
-or are working. Each project carries `settled` (how many of its threads are settled)
-and `more` (active threads beyond `limit`). With `project=<id>`, the list includes every
-thread in that project, settled ones too, and each row has `settled: true|false`.
+or are working, and snoozed threads until they wake (at their time, or earlier when they
+ask for something or fail, as T3 decides). Each project carries `settled` and `snoozed`
+(how many of its threads are) and `more` (active threads beyond `limit`). With
+`project=<id>`, the list includes every thread in that project, settled and snoozed ones
+too, pinned ones first.
+
+Pinned threads come first, in a group of their own (`"title": "Pinned", "pinned": true,
+"id": null`), in the order they were pinned, and not again under their project.
+
+Each row also has `settled`, `pinned`, `snoozed_until` (ISO time while it's asleep, else
+null) and `can_mark_unread` (it has a finished run and isn't unread already).
 
 `state` is `needs_you | working | failed | done | idle`. `unread` means the last
 run finished after the thread was last opened (on any device). `limit` is per
 project. Pass `project` to get one project's full list.
+
+### `POST /v1/threads/<id>/action`
+
+The app's thread menu, from the list's hold menu:
+
+```jsonc
+{"action": "pin"}            // or "unpin"
+{"action": "snooze", "snooze": "tomorrow"}  // hour | three-hours | evening | tomorrow | next-week
+{"action": "unsnooze"}       // wake it now
+{"action": "mark_unread"}
+{"action": "archive"}        // leaves the list (T3's shell omits archived threads)
+```
+
+Snooze presets are the app's: in an hour, in three hours, this evening at 18:00 (only
+while that's more than an hour away), tomorrow at 9:00, next Monday at 9:00, in the
+bridge's local time. A thread waiting for you can't be snoozed, and a working or waiting
+one can't be archived (409). Returns `{"ok": true}` once the change shows in T3.
 
 ### `GET /v1/threads/wait?v=<v>&timeout=55&limit=8`
 

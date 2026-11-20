@@ -58,6 +58,24 @@ class FakeT3:
                              "providerModelPreferences": {"x": {"hiddenModels": ["secret"]}}},
                 "providers": self.providers}
 
+    def thread_command(self, type_, tid, **fields):
+        t = dict(self.threads[tid])
+        if type_ == "thread.pin":
+            t.update(pinnedAt="2026-01-05T00:00:00Z", pinOrderKey=f"k{len(self.calls)}")
+        elif type_ == "thread.unpin":
+            t.update(pinnedAt=None, pinOrderKey=None)
+        elif type_ == "thread.snooze":
+            t.update(snoozedUntil=fields["snoozedUntil"], snoozedAt="2026-01-05T00:00:00Z")
+        elif type_ == "thread.unsnooze":
+            t.update(snoozedUntil=None)
+        elif type_ == "thread.mark-unread":
+            t.update(lastVisitedAt="2025-12-31T00:00:00Z")
+        if type_ == "thread.archive":
+            del self.threads[tid]  # the shell leaves archived threads out
+        else:
+            self.threads[tid] = t
+        return self._record("thread_command", type_, tid, **fields)
+
     def set_interaction_mode(self, tid, mode, **kw):
         self.threads[tid] = dict(self.threads[tid], interactionMode=mode)
         return self._record("set_interaction_mode", tid, mode, **kw)
@@ -672,6 +690,69 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.t3.calls[-1][2]["interaction_mode"], "plan")
         self.b.start_thread(render.short_id("p1"), "Just do it", client_msg_id="sp2")
         self.assertEqual(self.t3.calls[-1][2]["interaction_mode"], "default")
+
+
+    def _titles(self, body):
+        return {g["title"]: [r["title"] for r in g["threads"]] for g in body["projects"]}
+
+    def test_pin_puts_thread_in_a_pinned_group_on_top(self):
+        self.b.thread_action(self.s2, "pin")
+        out = self.b.thread_list()
+        self.assertEqual(out["projects"][0]["title"], "Pinned")
+        self.assertEqual(self._titles(out)["Pinned"], ["Thread t2"])
+        self.assertTrue(out["projects"][0]["threads"][0]["pinned"])
+        self.assertNotIn("Beta", self._titles(out))  # not listed twice
+        # A project's own list shows it first, in place.
+        self.assertEqual(self.b.thread_list(project=render.short_id("p2"))["projects"][0]["threads"][0]["title"],
+                         "Thread t2")
+        self.b.thread_action(self.s2, "unpin")
+        self.assertNotIn("Pinned", self._titles(self.b.thread_list()))
+
+    def test_snooze_hides_until_wake_or_a_request(self):
+        self.b.thread_action(self.s1, "snooze", snooze="tomorrow")
+        name, args, kw = self.t3.calls[-1]
+        self.assertEqual(args[0], "thread.snooze")
+        self.assertTrue(kw["snoozedUntil"].endswith("Z"))
+        out = self.b.thread_list()
+        alpha = next(g for g in out["projects"] if g["title"] == "Alpha")
+        self.assertNotIn("Thread t1", [r["title"] for r in alpha["threads"]])
+        self.assertEqual(alpha["snoozed"], 1)
+        row = next(r for r in self.b.thread_list(project=render.short_id("p1"))["projects"][0]["threads"]
+                   if r["title"] == "Thread t1")
+        self.assertIsNotNone(row["snoozed_until"])
+        # Asking for something wakes it, as in T3.
+        self.t3.threads["t1"] = dict(self.t3.threads["t1"], pendingRuntimeRequest={"id": "r"})
+        self.b.refresh()
+        self.assertIn("Thread t1", self._titles(self.b.thread_list())["Alpha"])
+        self.t3.threads["t1"] = dict(self.t3.threads["t1"], pendingRuntimeRequest=None)
+        self.b.refresh()
+        self.b.thread_action(self.s1, "unsnooze")
+        self.assertEqual(self.t3.calls[-1][2], {"reason": "user"})
+        self.assertIn("Thread t1", self._titles(self.b.thread_list())["Alpha"])
+        with self.assertRaises(BridgeError):
+            self.b.thread_action(self.s1, "snooze", snooze="someday")
+
+    def test_snooze_presets(self):
+        from datetime import datetime, timezone
+        from t3bridge.core import snooze_until
+        fri = datetime(2026, 11, 20, 10, 30, tzinfo=timezone.utc)  # a Friday
+        self.assertEqual(snooze_until("hour", fri), "2026-11-20T11:30:00.000Z")
+        self.assertEqual(snooze_until("evening", fri), "2026-11-20T18:00:00.000Z")
+        self.assertEqual(snooze_until("tomorrow", fri), "2026-11-21T09:00:00.000Z")
+        self.assertEqual(snooze_until("next-week", fri), "2026-11-23T09:00:00.000Z")
+        with self.assertRaises(BridgeError):
+            snooze_until("evening", fri.replace(hour=17, minute=30))
+
+    def test_mark_unread_and_archive(self):
+        row = lambda: next(r for r in self.b.thread_list()["projects"] for r in r["threads"]
+                           if r["title"] == "Thread t1")
+        self.assertTrue(row()["can_mark_unread"])
+        self.b.thread_action(self.s1, "mark_unread")
+        self.assertEqual((row()["unread"], row()["can_mark_unread"]), (True, False))
+        with self.assertRaises(BridgeError):
+            self.b.thread_action(self.s2, "archive")  # still working
+        self.b.thread_action(self.s1, "archive")
+        self.assertNotIn("Thread t1", self._titles(self.b.thread_list()).get("Alpha", []))
 
 
 class TokenTests(unittest.TestCase):

@@ -60,6 +60,7 @@ def make_handler(bridge: Bridge, device_token: str):
         ("POST", re.compile(r"^/v1/threads/(\w+)/settle$"), "settle"),
         ("POST", re.compile(r"^/v1/threads/(\w+)/secret$"), "secret"),
         ("POST", re.compile(r"^/v1/threads/(\w+)/model$"), "set_model"),
+        ("POST", re.compile(r"^/v1/threads/(\w+)/action$"), "action"),
     ]
 
     class Handler(BaseHTTPRequestHandler):
@@ -196,6 +197,12 @@ def make_handler(bridge: Bridge, device_token: str):
             if not isinstance(secret, str):
                 raise BridgeError(400, "send `secret` or `decline: true`")
             return bridge.answer_secret(short, secret)
+
+        def r_action(self, q, short):
+            b = self._body()
+            snooze = b.get("snooze")
+            return bridge.thread_action(short, str(b.get("action", "")),
+                                        snooze=snooze if isinstance(snooze, str) else None)
 
         def r_settle(self, q, short):
             b = self._body()

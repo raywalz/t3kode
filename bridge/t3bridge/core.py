@@ -15,7 +15,7 @@ import time
 import uuid
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import render
 from .images import Images
@@ -77,7 +77,8 @@ def _wake_key(t: dict) -> tuple:
     return (state, pending, t.get("title"), render.is_unread(t), t.get("settledOverride"),
             None if state == "working" else t.get("itemCount"),
             model.get("instanceId"), model.get("model"),
-            t.get("interactionMode"), bool(t.get("hasActionableProposedPlan")))
+            t.get("interactionMode"), bool(t.get("hasActionableProposedPlan")),
+            bool(t.get("pinnedAt")), _snoozed(t))
 
 
 def _content_version(body: dict, progress: bool) -> str:
@@ -110,6 +111,46 @@ def _secret_error(e: Exception) -> str:
 
 def _is_settled(t: dict) -> bool:
     return t.get("settledOverride") == "settled"
+
+
+def _snoozed(t: dict, now: str | None = None) -> bool:
+    """Snoozed and still asleep, as T3 decides (threadSettled.ts effectiveSnoozed): the
+    wake time hasn't passed, and the thread hasn't raised its hand since (a request
+    for you, or a run that failed after it was snoozed)."""
+    until = t.get("snoozedUntil")
+    if not until or until <= (now or _now_iso()):
+        return False
+    state = render.thread_state(t)
+    if state == "needs_you":
+        return False
+    if state == "failed":
+        failed_at = t.get("latestRunCompletedAt") or t.get("updatedAt")
+        if not t.get("snoozedAt") or (failed_at and failed_at > t["snoozedAt"]):
+            return False
+    return True
+
+
+def snooze_until(preset: str, now: datetime | None = None) -> str:
+    """The wake time for one of the app's snooze presets (threadSettled.ts
+    resolveSnoozePresets), in the bridge's local time: in an hour, in three hours, this
+    evening (18:00), tomorrow (9:00), next Monday (9:00)."""
+    now = now or datetime.now().astimezone()
+    at = lambda d, h: d.replace(hour=h, minute=0, second=0, microsecond=0)
+    if preset == "hour":
+        wake = now + timedelta(hours=1)
+    elif preset == "three-hours":
+        wake = now + timedelta(hours=3)
+    elif preset == "evening":
+        wake = at(now, 18)
+        if wake - now <= timedelta(hours=1):
+            raise BridgeError(400, "too late for this evening")
+    elif preset == "tomorrow":
+        wake = at(now + timedelta(days=1), 9)
+    elif preset == "next-week":
+        wake = at(now + timedelta(days=(7 - now.weekday()) or 7), 9)
+    else:
+        raise BridgeError(400, "unknown snooze preset")
+    return wake.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _shelved(t: dict) -> bool:
@@ -329,21 +370,27 @@ class Bridge:
         self.last_device_at = time.monotonic()
         shell = self.shell or {"threads": [], "projects": []}
         projects = {p["id"]: p for p in shell["projects"]}
+        now = _now_iso()
         groups: dict[str | None, list[dict]] = {}
+        pinned = []
         for t in self.threads.values():
             if _is_subagent(t):
                 continue  # reached through their parent thread
+            if t.get("pinnedAt") and project is None:
+                pinned.append(t)  # in their own group at the top, as in the app's sidebar
+                continue
             groups.setdefault(t.get("projectId"), []).append(t)
         if project is not None:
             pid = self.by_short.get(project)
             groups = {pid: groups.get(pid, [])}
         out = []
         for pid, threads in groups.items():
-            threads.sort(key=lambda t: t.get("updatedAt") or "", reverse=True)
+            threads.sort(key=lambda t: (bool(t.get("pinnedAt")), t.get("updatedAt") or ""), reverse=True)
             p = projects.get(pid) if pid else None
-            # Like the desktop inbox: settled threads drop out of the main list (unless
-            # they need you or are working); one project's own list shows everything.
-            active = threads if project is not None else [t for t in threads if not _shelved(t)]
+            # Like the desktop inbox: settled and snoozed threads drop out of the main list
+            # (unless they need you or are working); one project's own list shows everything.
+            active = threads if project is not None else [
+                t for t in threads if not _shelved(t) and not _snoozed(t, now)]
             settled = sum(1 for t in threads if _is_settled(t))
             out.append({
                 "id": render.short_id(pid) if pid else None,
@@ -352,19 +399,26 @@ class Bridge:
                 "active_updated": active[0].get("updatedAt") if active else None,
                 "total": len(threads),
                 "settled": settled,
+                "snoozed": sum(1 for t in threads if _snoozed(t, now) and not _shelved(t)),
                 "more": max(0, len(active) - limit),
-                "threads": [self._thread_row(t) for t in active[:limit]],
+                "threads": [self._thread_row(t, now) for t in active[:limit]],
             })
         # Projects with something active first, most recent first; settled-only ones after.
         out.sort(key=lambda g: (g["active_updated"] is not None, g["active_updated"] or g["updated"] or ""),
                  reverse=True)
+        if pinned:
+            # Pinned threads stay in the order they were pinned, as in the app.
+            pinned.sort(key=lambda t: (t.get("pinOrderKey") or "", t.get("pinnedAt") or ""))
+            out.insert(0, {"id": None, "title": "Pinned", "pinned": True, "updated": None,
+                           "active_updated": None, "total": len(pinned), "settled": 0, "snoozed": 0,
+                           "more": 0, "threads": [self._thread_row(t, now) for t in pinned]})
         body = {"v": self.list_v, "projects": out}
         notice = self.token_keeper.notice() if self.token_keeper else None
         if notice:
             body["notice"] = notice
         return body
 
-    def _thread_row(self, t: dict) -> dict:
+    def _thread_row(self, t: dict, now: str | None = None) -> dict:
         cached = self.entries.get(t["id"])
         lvm = (t.get("latestVisibleMessage") or {}).get("text")
         if lvm:
@@ -372,7 +426,11 @@ class Bridge:
         prev = render.preview(cached[2]) if cached else (lvm or "")
         row = {"id": render.short_id(t["id"]), "title": t.get("title") or "Untitled",
                "state": render.thread_state(t), "unread": render.is_unread(t),
-               "updated": t.get("updatedAt"), "preview": prev, "settled": _is_settled(t)}
+               "updated": t.get("updatedAt"), "preview": prev, "settled": _is_settled(t),
+               "pinned": bool(t.get("pinnedAt")),
+               "snoozed_until": t["snoozedUntil"] if _snoozed(t, now) else None,
+               # Mark unread needs a finished run (T3 refuses it otherwise).
+               "can_mark_unread": bool(t.get("latestRunCompletedAt")) and not render.is_unread(t)}
         # Surface subagents that need attention on their parent's row.
         states = [render.thread_state(c) for c in self._children(t["id"])]
         if states:
@@ -919,6 +977,43 @@ class Bridge:
                 break
             time.sleep(self.settle_delay)
         return {"ok": True, "settled": _is_settled(self.threads.get(t["id"], {}))}
+
+    ACTIONS = {
+        "pin": ("thread.pin", lambda t: bool(t.get("pinnedAt"))),
+        "unpin": ("thread.unpin", lambda t: not t.get("pinnedAt")),
+        "snooze": ("thread.snooze", lambda t: bool(t.get("snoozedUntil"))),
+        "unsnooze": ("thread.unsnooze", lambda t: not _snoozed(t)),
+        "mark_unread": ("thread.mark-unread", render.is_unread),
+        "archive": ("thread.archive", lambda t: t is None or bool(t.get("archivedAt"))),
+    }
+
+    def thread_action(self, short: str, action: str, snooze: str | None = None) -> dict:
+        """Pin, unpin, snooze (until one of the app's presets), wake, mark unread or archive
+        a thread, as the app's thread menu does. Returns once the shell shows it."""
+        self.last_device_at = time.monotonic()
+        t = self._thread(short)
+        if action not in self.ACTIONS:
+            raise BridgeError(400, "unknown action")
+        type_, done = self.ACTIONS[action]
+        fields = {}
+        if action == "snooze":
+            if render.thread_state(t) == "needs_you":
+                raise BridgeError(409, "a thread waiting for you can't be snoozed")
+            fields["snoozedUntil"] = snooze_until(snooze or "")
+        elif action == "unsnooze":
+            fields["reason"] = "user"
+        elif action == "archive" and render.thread_state(t) in ("working", "needs_you"):
+            raise BridgeError(409, "stop the thread before archiving it")
+        try:
+            self.client.thread_command(type_, t["id"], **fields)
+        except T3Error as e:
+            raise BridgeError(502, f"T3 refused: {e}") from None
+        for _ in range(6):  # until the shell shows it, so the device's next list is right
+            self.refresh()
+            if done(self.threads.get(t["id"])):
+                break
+            time.sleep(self.settle_delay)
+        return {"ok": True}
 
     def start_thread(self, project: str, text: str, client_msg_id: str | None = None,
                      model: str | None = None, mode: str | None = None) -> dict:

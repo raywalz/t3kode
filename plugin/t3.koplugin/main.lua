@@ -235,6 +235,15 @@ local function ago(iso)
     return T(_("%1d"), math.floor(s / 86400))
 end
 
+--- When a snoozed thread wakes, in the device's time: "18:00" today, else "Sat 9:00".
+local function wakeLabel(iso)
+    local t = parseIso(iso)
+    if not t then return "" end
+    local clock = os.date("%H:%M", t):gsub("^0", "")
+    if os.date("%Y%m%d", t) == os.date("%Y%m%d") then return clock end
+    return os.date("%a ", t) .. clock
+end
+
 local function str(v)
     return type(v) == "string" and v or nil
 end
@@ -252,11 +261,14 @@ function T3:listItems(body, project_filter)
     for _i, p in ipairs(body.projects or {}) do
         local header = str(p.title) or _("No project")
         if not project_filter then
-            -- What tapping the header reveals: more active threads, and the settled ones.
+            -- What tapping the header reveals: more active threads, and the settled and
+            -- snoozed ones.
             local extra = {}
             local more = tonumber(p.more) or 0
             local settled = tonumber(p.settled) or 0
+            local snoozed = tonumber(p.snoozed) or 0
             if more > 0 then table.insert(extra, T(_("%1 more"), more)) end
+            if snoozed > 0 then table.insert(extra, T(_("%1 snoozed"), snoozed)) end
             if settled > 0 then table.insert(extra, T(_("%1 settled"), settled)) end
             if #extra > 0 then header = header .. "  (" .. table.concat(extra, " · ") .. ")" end
         end
@@ -284,6 +296,9 @@ function T3:listItems(body, project_filter)
             end
             if t.settled == true and state ~= "needs_you" and state ~= "working" then
                 label = _("settled") .. " · " .. ago(t.updated)
+            end
+            if str(t.snoozed_until) then
+                label = T(_("until %1"), wakeLabel(t.snoozed_until))
             end
             table.insert(items, {
                 text = "    " .. (str(t.title) or _("Untitled")),
@@ -394,30 +409,105 @@ function T3:scheduleListPoll()
     UIManager:scheduleIn(POLL_LIST, self.list_poll)
 end
 
---- Hold on a thread in the list: settle it (or bring it back).
+--- Run a thread action from the list, then show the list as it now is.
+function T3:listAction(busy_text, fn)
+    local ok, err = withBusy(busy_text, fn)
+    if not ok then
+        notify(err)
+        return
+    end
+    pcall(function() self:refreshList(true) end)
+end
+
+--- The app's snooze choices. This evening only while it's more than an hour away.
+function T3:snoozeThread(t)
+    local presets = {
+        { "hour", _("In 1 hour") },
+        { "three-hours", _("In 3 hours") },
+    }
+    local now = os.date("*t")
+    if now.hour < 17 then table.insert(presets, { "evening", _("This evening") }) end
+    table.insert(presets, { "tomorrow", _("Tomorrow morning") })
+    if now.wday ~= 1 then -- on a Sunday, tomorrow is already next week's Monday
+        table.insert(presets, { "next-week", _("Next week") })
+    end
+    local dialog
+    local rows = {}
+    for _i, p in ipairs(presets) do
+        table.insert(rows, {{
+            text = p[2],
+            callback = function()
+                UIManager:close(dialog)
+                self:listAction(_("Snoozing…"), function()
+                    return self.api:threadAction(t.id, "snooze", p[1])
+                end)
+            end,
+        }})
+    end
+    dialog = ButtonDialog:new{ title = _("Snooze until…"), buttons = rows }
+    UIManager:show(dialog)
+end
+
+--- Hold on a thread in the list: the app's thread menu (pin, snooze, mark unread,
+--- settle, archive).
 function T3:threadActions(t)
     local settled = t.settled == true
+    local pinned = t.pinned == true
+    local snoozed = str(t.snoozed_until) ~= nil
+    local state = str(t.state) or "done"
+    local busy = state == "working" or state == "needs_you"
     local dialog
-    dialog = ButtonDialog:new{
-        title = str(t.title) or _("Thread"),
-        buttons = {
-            {{
-                text = settled and _("Unsettle") or _("Settle"),
-                callback = function()
-                    UIManager:close(dialog)
-                    local ok, err = withBusy(settled and _("Unsettling…") or _("Settling…"), function()
-                        return self.api:settle(t.id, not settled)
-                    end)
-                    if not ok then
-                        notify(err)
-                        return
-                    end
-                    pcall(function() self:refreshList(true) end)
-                end,
-            }},
-            {{ text = _("Cancel"), callback = function() UIManager:close(dialog) end }},
-        },
-    }
+    local function action(text, busy_text, fn)
+        return {{
+            text = text,
+            callback = function()
+                UIManager:close(dialog)
+                self:listAction(busy_text, fn)
+            end,
+        }}
+    end
+    local rows = {}
+    table.insert(rows, action(pinned and _("Unpin") or _("Pin"), pinned and _("Unpinning…") or _("Pinning…"),
+        function() return self.api:threadAction(t.id, pinned and "unpin" or "pin") end))
+    if snoozed then
+        table.insert(rows, action(_("Wake now"), _("Waking…"),
+            function() return self.api:threadAction(t.id, "unsnooze") end))
+    elseif state ~= "needs_you" then
+        table.insert(rows, {{
+            text = _("Snooze…"),
+            callback = function()
+                UIManager:close(dialog)
+                self:snoozeThread(t)
+            end,
+        }})
+    end
+    if t.can_mark_unread == true then
+        table.insert(rows, action(_("Mark unread"), _("Marking unread…"),
+            function() return self.api:threadAction(t.id, "mark_unread") end))
+    end
+    table.insert(rows, action(settled and _("Unsettle") or _("Settle"),
+        settled and _("Unsettling…") or _("Settling…"),
+        function() return self.api:settle(t.id, not settled) end))
+    if not busy then
+        table.insert(rows, {{
+            text = _("Archive"),
+            callback = function()
+                UIManager:close(dialog)
+                UIManager:show(ConfirmBox:new{
+                    text = T(_("Archive \"%1\"?\nIt leaves the list; unarchive it in T3 on the desktop."),
+                        str(t.title) or _("this thread")),
+                    ok_text = _("Archive"),
+                    ok_callback = function()
+                        self:listAction(_("Archiving…"), function()
+                            return self.api:threadAction(t.id, "archive")
+                        end)
+                    end,
+                })
+            end,
+        }})
+    end
+    table.insert(rows, {{ text = _("Cancel"), callback = function() UIManager:close(dialog) end }})
+    dialog = ButtonDialog:new{ title = str(t.title) or _("Thread"), buttons = rows }
     UIManager:show(dialog)
 end
 
