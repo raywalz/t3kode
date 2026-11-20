@@ -127,8 +127,6 @@ Same body as the list, plus `"changed": true|false`.
 {"kind": "approval", "header": "File change", "text": "/tmp/x.txt", "note": "Path is outside allowed working directories"}
 {"kind": "question", "header": "Color", "text": "Which color?", "step": "1/2",
  "options": [{"label": "Red", "description": "Choose red."}, ...]}
-```
-
 {"kind": "secret", "header": "API key", "text": "<the agent's reason>", "link": "https://…",
  "placeholder": null, "note": "Stored securely, never shown to the agent"}
 ```
@@ -138,18 +136,13 @@ A `secret` request comes from T3's request_secret tool. Its buttons are **Enter 
 and **Decline** (an ordinary reply). While one is pending, `typed` is `none`, so typed text
 can't end up in the chat.
 
-```jsonc
-// (other pending kinds, continued)
-{"kind": "unknown"}
-```
-
 `note` may also say the request has to be answered on another device (for
 example, one that can't be resumed). Then there are no buttons.
 
 **`typed`**: what text typed into the box will do:
 - `message`: send it as a normal message
 - `answer`: answer the current question with it (a custom answer)
-- `none`: the question only accepts its options
+- `none`: nothing can be typed (a question that only accepts its options, or a pending secret)
 
 ### `GET /v1/threads/<id>/wait?v=<v>&timeout=55&progress=1`
 
