@@ -446,7 +446,6 @@ function T3:fetchImages(view)
     if type(view.images) ~= "table" or #view.images == 0 then return have end
     local dir = imageDir()
     self.image_failed = self.image_failed or {}
-    local width = Device.screen:getWidth()
     local missing = {}
     for _i, id in ipairs(view.images) do
         id = str(id)
@@ -462,26 +461,41 @@ function T3:fetchImages(view)
     if #missing == 0 then return have end
     withBusy(_("Loading images…"), function()
         for _i, id in ipairs(missing) do
-            local tmp = dir .. "/" .. id .. ".download"
-            local ok, ctype = self.api:download("/v1/images/" .. id, { w = width }, tmp)
-            local ext = ok and EXT_FOR_TYPE[(tostring(ctype or "")):match("^[^;%s]+")]
-            if ext then
-                os.rename(tmp, dir .. "/" .. id .. "." .. ext)
-                have[id] = id .. "." .. ext
-            else
-                os.remove(tmp)
-                logger.warn("t3: image", id, ok and ("unsupported type " .. tostring(ctype)) or ctype)
-                self.image_failed[id] = true -- don't retry on every redraw
-            end
+            have[id] = self:downloadImage(id)
         end
     end)
     return have
 end
 
+--- Fetch one image into the cache; returns its file name, or nil.
+function T3:downloadImage(id)
+    local dir = imageDir()
+    local tmp = dir .. "/" .. id .. ".download"
+    local ok, ctype = self.api:download("/v1/images/" .. id, { w = Device.screen:getWidth() }, tmp)
+    local ext = ok and EXT_FOR_TYPE[(tostring(ctype or "")):match("^[^;%s]+")]
+    if not ext then
+        os.remove(tmp)
+        logger.warn("t3: image", id, ok and ("unsupported type " .. tostring(ctype)) or ctype)
+        self.image_failed = self.image_failed or {}
+        self.image_failed[id] = true -- don't retry on every redraw
+        return nil
+    end
+    os.rename(tmp, dir .. "/" .. id .. "." .. ext)
+    return id .. "." .. ext
+end
+
+--- Full-screen view of an image; screenshots in tool steps are fetched on first tap.
 function T3:showImage(id)
     local dir = imageDir()
     local name = cachedImage(dir, id)
-    if not name then return end
+    if not name then
+        local _ok, fetched = withBusy(_("Loading image…"), function() return true, self:downloadImage(id) end)
+        name = fetched
+    end
+    if not name then
+        notify(_("Couldn't load this image."))
+        return
+    end
     UIManager:show(ImageViewer:new{ file = dir .. "/" .. name, fullscreen = true, with_title_bar = false })
 end
 

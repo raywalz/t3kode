@@ -334,6 +334,52 @@ def _md_image(image_ref):
     return lambda src, alt: image_ref("path", src, alt)
 
 
+# Image MIME types T3 serves from tool output (isProviderSendTurnSupportedImageMimeType).
+_TOOL_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+_MAX_TOOL_OUTPUT_IMAGES = 8  # MAX_TOOL_OUTPUT_IMAGES in T3
+
+
+def tool_output_images(output) -> int:
+    """How many images a tool's output carries, counted the way T3 numbers them for
+    its tool-output-image assets (packages/shared/src/toolOutput.ts)."""
+    if isinstance(output, list):
+        blocks = output
+    elif isinstance(output, dict) and isinstance(output.get("content"), list):
+        blocks = output["content"]
+    else:
+        blocks = [output]
+    n = 0
+    for b in blocks:
+        if not isinstance(b, dict) or b.get("type") != "image":
+            continue
+        src = b.get("source") if isinstance(b.get("source"), dict) else None
+        if src is not None and src.get("type") != "base64":
+            continue
+        mime = (src.get("media_type") if src is not None else b.get("mimeType")) or ""
+        if str(mime).lower() not in _TOOL_IMAGE_TYPES:
+            continue
+        n += 1
+        if n == _MAX_TOOL_OUTPUT_IMAGES:
+            break
+    return n
+
+
+def _tool_image_links(item: dict, image_ref) -> list[str]:
+    """Links to the images a tool returned (browser and device screenshots, images it read)."""
+    count = tool_output_images(item.get("output"))
+    if not count or not item.get("id"):
+        return []
+    viewed = item.get("viewedImagePath")
+    label = _base(viewed) if viewed else "screenshot"
+    links = []
+    for index in range(count):
+        name = label if count == 1 else f"{label} {index + 1}"
+        link = image_ref("tool-output", (item["id"], index), name)
+        if link:
+            links.append(link)
+    return links
+
+
 def _attachment_images(item: dict, image_ref) -> str:
     out = []
     for a in item.get("attachments") or []:
@@ -379,12 +425,20 @@ def render_items(items: list[dict], child_info=None, image_ref=None) -> list[dic
     group: list[tuple[str, list[str], bool]] = []
     group_o = 0
 
+    group_images: list[str] = []  # links to images in this run of tool calls
+
     def flush():
-        nonlocal group
+        nonlocal group, group_images
         if group:
             line = summarize_tools(group)
-            entries.append({"o": group_o, "role": "tool", "text": line, "html": text_html(line)})
+            body = html.escape(line, quote=False)
+            if group_images:
+                shown = group_images[:6]
+                more = len(group_images) - len(shown)
+                body += " · " + ", ".join(shown) + (f" +{more}" if more > 0 else "")
+            entries.append({"o": group_o, "role": "tool", "text": line, "html": f"<p>{body}</p>"})
             group = []
+            group_images = []
 
     for item in items:
         kind = item.get("type")
@@ -406,6 +460,8 @@ def render_items(items: list[dict], child_info=None, image_ref=None) -> list[dic
             if tool is not None:
                 group.append((tool[0], tool[1], item.get("status") != "failed"))
                 group_o = o
+                if image_ref and kind == "dynamic_tool":
+                    group_images += _tool_image_links(item, image_ref)
             continue
         if kind in _SILENT:
             continue

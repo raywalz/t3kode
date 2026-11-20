@@ -56,6 +56,11 @@ class Images:
             else:
                 resource = {"_tag": "workspace-file", "threadId": thread_id, "path": src}
             mime = ""
+        elif kind == "tool-output" and isinstance(source, tuple):
+            item_id, index = source
+            resource = {"_tag": "tool-output-image", "threadId": thread_id, "itemId": item_id,
+                        "index": int(index)}
+            mime = ""
         elif kind == "attachment" and isinstance(source, dict) and source.get("id"):
             resource = {"_tag": "attachment", "attachmentId": source["id"], "disposition": "inline"}
             if source.get("mimeType"):
@@ -66,6 +71,9 @@ class Images:
         image_id = render.short_id(thread_id + "\0" + repr(sorted(resource.items())))
         with self.lock:
             self.registry[image_id] = (resource, mime)
+        if kind == "tool-output":
+            # Screenshots in tool steps: a link only (fetched when tapped), so tool lines stay short.
+            return f'<a href="t3:img:{image_id}">{html.escape(alt or "image", quote=False)} ›</a>'
         alt_attr = html.escape(alt or "image")
         # The device swaps t3img:<id> for its downloaded copy; tapping opens it full screen.
         return f'<a href="t3:img:{image_id}"><img src="t3img:{image_id}" alt="{alt_attr}"/></a>'

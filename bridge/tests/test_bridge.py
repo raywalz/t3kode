@@ -579,6 +579,25 @@ class ImageTests(unittest.TestCase):
         self.assertIn("[image: web]", v["entries"][1]["html"])
         self.assertIn('href="t3:img:', v["entries"][1]["html"])
 
+    def test_tool_screenshots_become_links(self):
+        img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "x"}}
+        self.assertEqual(render.tool_output_images({"content": [img, {"type": "text"}, img]}), 2)
+        self.assertEqual(render.tool_output_images([{"type": "image", "mimeType": "image/tiff"}]), 0)
+        self.assertEqual(render.tool_output_images({"content": [img] * 12}), 8)  # T3's cap
+        self.t3.items["t1"].append(item(3, "dynamic_tool", id="tool-1", toolName="mcp__t3-code__preview_snapshot",
+                                        input={}, output={"content": [img, img]}))
+        self.t3.threads["t1"] = dict(self.t3.threads["t1"], itemCount=3)
+        self.b.refresh()
+        v = self.b.thread_view(render.short_id("t1"))
+        line = v["entries"][-1]
+        self.assertEqual(line["role"], "tool")
+        self.assertEqual(line["html"].count('href="t3:img:'), 2)
+        self.assertIn("screenshot 1 ›", line["html"])
+        self.assertEqual(len(v["images"]), 2)  # links aren't prefetched; only the inline images are
+        link_id = line["html"].split('t3:img:')[1].split('"')[0]
+        resource, _ = self.b.images.registry[link_id]
+        self.assertEqual(resource, {"_tag": "tool-output-image", "threadId": "t1", "itemId": "tool-1", "index": 0})
+
     def test_only_registered_images_are_served(self):
         from t3bridge.images import ImageError
         with self.assertRaises(ImageError):

@@ -193,6 +193,10 @@ With ImageMagick installed on the bridge machine, images are shrunk to at most `
 pixels wide and turned grayscale: PNG for screenshots, JPEG for photos. Without it, the
 original bytes are sent.
 
+Images a tool returned (browser and device screenshots, images an agent read) appear
+in that step's `tool` line as links, `<a href="t3:img:<id>">screenshot ›</a>`, fetched
+from the same endpoint when tapped. They aren't in `images`, so they're never prefetched.
+
 In entry `html`, an image is `<a href="t3:img:<id>"><img src="t3img:<id>" alt="…"/></a>`.
 The device swaps `t3img:<id>` for its downloaded copy, or replaces the whole link with a
 placeholder.
