@@ -42,7 +42,8 @@ hr { border: 0; border-top: 1px solid #888; margin: 0.5em 0; }
 .status { color: #444; font-style: italic; font-size: 0.9em; margin-top: 0.4em; }
 .pending { border: 2px solid black; padding: 0.45em; margin-top: 0.6em; }
 .pending-title { font-weight: bold; margin-bottom: 0.25em; }
-.more { color: #444; font-size: 0.85em; text-align: center; margin-bottom: 0.8em; }
+.more { font-size: 0.85em; text-align: center; margin-bottom: 0.8em; }
+.more a { text-decoration: underline; }
 img { max-width: 100%; }
 a { color: black; text-decoration: none; }
 .fold { border: 1px solid #888; padding: 0.25em 0.5em; color: #333; font-size: 0.9em; }

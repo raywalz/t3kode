@@ -522,7 +522,7 @@ end
 local function composeHtml(view, have)
     local parts = {}
     if view.more_before == true then
-        table.insert(parts, '<div class="more">' .. esc(_("⋯ Earlier messages: tap Older.")) .. "</div>")
+        table.insert(parts, '<div class="more"><a href="t3:older">' .. esc(_("⋯ Show earlier messages")) .. "</a></div>")
     end
     for _i, e in ipairs(view.entries or {}) do
         local role = str(e.role) or "note"
@@ -635,11 +635,6 @@ function T3:threadButtons(view)
             callback = function() self:showReplyDialog(view, suggestions, typed ~= "none") end,
         },
         {
-            text = _("Older"),
-            enabled = view.more_before == true,
-            callback = function() self:showOlder(view, view.entries and view.entries[1] and view.entries[1].o) end,
-        },
-        {
             text = _("Refresh"),
             callback = function() self:reloadThread(view.id) end,
         },
@@ -667,6 +662,9 @@ function T3:showThread(view, opts)
         start_page = page,
         refresh = (opts.update and old) and "ui" or "full",
         link_callback = function(uri)
+            if uri == "t3:older" then
+                return self:showOlder(view, view.entries and view.entries[1] and view.entries[1].o)
+            end
             local run = uri:match("^t3:run:(%w+)$")
             if run then return self:toggleRun(view, run) end
             local child = uri:match("^t3:thread:(%w+)$")
@@ -983,16 +981,12 @@ function T3:showOlder(view, before)
         title = T(_("%1 (earlier)"), str(view.title) or _("Thread")),
         html = composeHtml(older, self:fetchImages(older)),
         resource_dir = imageDir(),
-        buttons = {{
-            {
-                text = _("Older"),
-                enabled = older.more_before == true,
-                callback = function()
-                    UIManager:close(older_viewer)
-                    self:showOlder(view, first)
-                end,
-            },
-        }},
+        link_callback = function(uri)
+            if uri == "t3:older" then
+                UIManager:close(older_viewer)
+                self:showOlder(view, first)
+            end
+        end,
     }
     Gestures.attach(older_viewer)
     UIManager:show(older_viewer)
