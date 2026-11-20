@@ -37,6 +37,13 @@ class FakeT3:
         self.projects = [{"id": "p1", "title": "Alpha"}, {"id": "p2", "title": "Beta"}]
         self.calls = []
 
+    settings = {"defaultRuntimeMode": "full-access",
+                "defaultModelSelection": {"instanceId": "x", "model": "default-model"},
+                "projectSettingsOverrides": {"p2": {"defaultRuntimeMode": "approval-required"}}}
+
+    def server_config(self):
+        return {"settings": self.settings}
+
     def environment(self):
         return {"serverVersion": "test", "orchestrationProtocolVersion": 2,
                 "capabilities": {"threadStop": True}}
@@ -282,12 +289,15 @@ class BridgeTests(unittest.TestCase):
         self.b.suggestions["t2"]["done"].wait(2)
         self.assertEqual(self.b.suggestions["t2"]["status"], "ready")
 
-    def test_start_thread_copies_recent_thread_settings(self):
+    def test_start_thread_uses_t3_settings(self):
         v = self.b.start_thread(render.short_id("p1"), "Fix the login bug", client_msg_id="n1")
         name, args, kw = self.t3.calls[-1]
         self.assertEqual((name, args[0], args[2]), ("launch_thread", "p1", "Fix the login bug"))
-        self.assertEqual(kw["runtime_mode"], "approval-required")
+        self.assertEqual((args[3]["model"], kw["runtime_mode"]), ("default-model", "full-access"))
         self.assertEqual(v["state"], "working")
+        # A project override wins over the server-wide default.
+        self.b.start_thread(render.short_id("p2"), "Other project", client_msg_id="n2")
+        self.assertEqual(self.t3.calls[-1][2]["runtime_mode"], "approval-required")
 
 
 class HttpTests(unittest.TestCase):

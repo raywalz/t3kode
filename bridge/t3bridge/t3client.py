@@ -86,6 +86,10 @@ class T3Client:
         """All projects and (non-archived) thread summaries, with status."""
         return self._http("GET", "/api/orchestration/shell")
 
+    def server_config(self) -> dict:
+        """Server config, including the user's settings (default model and runtime mode)."""
+        return self.rpc("server.getConfig", {})
+
     def thread_snapshot(self, thread_id: str) -> dict:
         """Full projection: runs, messages, runtimeRequests, turnItems, ..."""
         return self._http("GET", f"/api/orchestration/threads/{_q(thread_id)}")

@@ -142,8 +142,7 @@ def make_handler(bridge: Bridge, device_token: str):
         def r_start(self, q):
             b = self._body()
             return bridge.start_thread(str(b.get("project", "")), str(b.get("text", "")),
-                                       client_msg_id=b.get("client_msg_id"),
-                                       runtime_mode=b.get("runtime_mode"))
+                                       client_msg_id=b.get("client_msg_id"))
 
     return Handler
 

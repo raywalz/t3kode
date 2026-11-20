@@ -136,15 +136,15 @@ choices currently take a single tap.
 ### `POST /v1/threads`
 
 ```json
-{"project": "k3x9a2bq", "text": "Fix the flaky login test", "client_msg_id": "...",
- "runtime_mode": "approval-required"}
+{"project": "k3x9a2bq", "text": "Fix the flaky login test", "client_msg_id": "..."}
 ```
 
-Starts a thread in the project root and returns its view. The model comes from
-the project's default model, or else from the project's most recent thread.
-`runtime_mode` is optional (`approval-required | auto-accept-edits | auto | full-access`).
-It defaults to the most recent thread's mode, so new threads behave like the
-ones you start on the desktop. T3 generates the title.
+Starts a thread in the project root and returns its view. The thread uses your
+own T3 settings, as a new thread in the app would: the model and permission
+mode come from the project's overrides if it has any, otherwise from the
+server-wide defaults (Settings → default model / runtime mode). They're read
+fresh for every new thread, so changes made on the desktop apply immediately.
+T3 generates the title.
 
 ### `GET /v1/health`
 

@@ -73,13 +73,11 @@ def _wake_key(t: dict) -> tuple:
 
 
 class Bridge:
-    def __init__(self, client, suggester=None, *, poll_fast: float = 2.0, poll_slow: float = 20.0,
-                 default_runtime_mode: str = "approval-required"):
+    def __init__(self, client, suggester=None, *, poll_fast: float = 2.0, poll_slow: float = 20.0):
         self.client = client
         self.suggester = suggester
         self.poll_fast = poll_fast
         self.poll_slow = poll_slow
-        self.default_runtime_mode = default_runtime_mode
         self.cond = threading.Condition()
         self.seq = 0  # bumps on every change the device could care about
         self.list_v = 0
@@ -562,10 +560,27 @@ class Bridge:
         elif t.get("activeRunId"):
             self.client.interrupt_run(t["id"], t["activeRunId"], command_id=_stable_id(cmid, "c"))
 
-    RUNTIME_MODES = ("approval-required", "auto-accept-edits", "auto", "full-access")
+    def new_thread_settings(self, pid: str, project: dict) -> tuple[dict, str]:
+        """(model selection, runtime mode) for a new thread, from the user's T3 settings,
+        the way the app picks them: the project's override, then the server-wide default.
+        Read fresh each time so a change made on the desktop applies at once."""
+        settings = (self.client.server_config().get("settings") or {})
+        override = (settings.get("projectSettingsOverrides") or {}).get(pid) or {}
+        model = (override.get("defaultModelSelection") or project.get("defaultModelSelection")
+                 or settings.get("defaultModelSelection") or settings.get("fallbackModelSelection"))
+        if not model:
+            # No default configured anywhere: fall back to the project's latest thread.
+            recent = max((t for t in self.threads.values() if t.get("projectId") == pid
+                          and self._top_level(t)),
+                         key=lambda t: t.get("createdAt") or "", default=None)
+            model = (recent or {}).get("modelSelection")
+        if not model:
+            raise BridgeError(409, "no default model is set in T3")
+        # T3's own default when the setting is absent.
+        runtime = override.get("defaultRuntimeMode") or settings.get("defaultRuntimeMode") or "full-access"
+        return model, runtime
 
-    def start_thread(self, project: str, text: str, client_msg_id: str | None = None,
-                     runtime_mode: str | None = None) -> dict:
+    def start_thread(self, project: str, text: str, client_msg_id: str | None = None) -> dict:
         self.last_device_at = time.monotonic()
         pid = self.by_short.get(project)
         shell = self.shell or {"projects": []}
@@ -576,15 +591,7 @@ class Bridge:
             raise BridgeError(400, "text is empty")
 
         def act():
-            recent = max((t for t in self.threads.values() if t.get("projectId") == pid
-                          and not (t.get("lineage") or {}).get("parentThreadId")),
-                         key=lambda t: t.get("createdAt") or "", default=None)
-            model = p.get("defaultModelSelection") or (recent or {}).get("modelSelection")
-            if not model:
-                raise BridgeError(409, "no model to use: this project has no threads or default model")
-            if runtime_mode is not None and runtime_mode not in self.RUNTIME_MODES:
-                raise BridgeError(400, f"runtime_mode must be one of {', '.join(self.RUNTIME_MODES)}")
-            runtime = runtime_mode or (recent or {}).get("runtimeMode") or self.default_runtime_mode
+            model, runtime = self.new_thread_settings(pid, p)
             title = " ".join(text.split())[:60]
             res = self.client.launch_thread(pid, title, text.strip(), model, runtime_mode=runtime,
                                             command_id=_stable_id(client_msg_id, "c"),

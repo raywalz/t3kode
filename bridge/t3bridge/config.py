@@ -42,8 +42,6 @@ class Config:
     # Seconds between T3 polls while something is live or a device is waiting, and otherwise.
     poll_fast: float = 2.0
     poll_slow: float = 20.0
-    # Used for new threads when the project has no thread to copy settings from.
-    default_runtime_mode: str = "approval-required"
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -64,7 +62,6 @@ class Config:
             suggest_count=int(env.get("SUGGEST_COUNT", "3")),
             poll_fast=float(env.get("POLL_FAST", "2")),
             poll_slow=float(env.get("POLL_SLOW", "20")),
-            default_runtime_mode=env.get("BRIDGE_DEFAULT_RUNTIME_MODE", "approval-required"),
         )
         if not cfg.device_token and not cfg.listens_on_loopback_only:
             raise SystemExit(
