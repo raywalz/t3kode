@@ -218,6 +218,13 @@ class T3Client:
     def delete_thread(self, thread_id: str) -> dict:
         return self.dispatch({"type": "thread.delete", "threadId": thread_id})
 
+    def settle_thread(self, thread_id: str) -> dict:
+        """Mark a thread handled, as the app's Settle does."""
+        return self.dispatch({"type": "thread.settle", "threadId": thread_id})
+
+    def unsettle_thread(self, thread_id: str) -> dict:
+        return self.dispatch({"type": "thread.unsettle", "threadId": thread_id, "reason": "user"})
+
     def stop_thread(self, thread_id: str, command_id: str | None = None) -> dict:
         """What the web app's Stop sends when the server has the threadStop capability."""
         return self.dispatch({"type": "thread.stop", "commandId": command_id or new_id(),

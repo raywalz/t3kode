@@ -70,7 +70,7 @@ def _wake_key(t: dict) -> tuple:
     don't count: no live streaming on e-ink."""
     state = render.thread_state(t)
     pending = (t.get("pendingRuntimeRequest") or {}).get("id")
-    return (state, pending, t.get("title"), render.is_unread(t),
+    return (state, pending, t.get("title"), render.is_unread(t), t.get("settledOverride"),
             None if state == "working" else t.get("itemCount"))
 
 
@@ -82,6 +82,15 @@ def _content_version(body: dict, progress: bool) -> str:
         shown["entries"] = [(e["role"], e["text"], e.get("expanded")) for e in body["entries"]]
     raw = json.dumps(shown, sort_keys=True, ensure_ascii=False).encode()
     return hashlib.sha1(raw).hexdigest()[:12]
+
+
+def _is_settled(t: dict) -> bool:
+    return t.get("settledOverride") == "settled"
+
+
+def _shelved(t: dict) -> bool:
+    """Settled and not asking for anything: out of the main list, as in the desktop inbox."""
+    return _is_settled(t) and render.thread_state(t) not in ("needs_you", "working")
 
 
 def _is_subagent(t: dict) -> bool:
@@ -298,14 +307,23 @@ class Bridge:
         for pid, threads in groups.items():
             threads.sort(key=lambda t: t.get("updatedAt") or "", reverse=True)
             p = projects.get(pid) if pid else None
+            # Like the desktop inbox: settled threads drop out of the main list (unless
+            # they need you or are working); one project's own list shows everything.
+            active = threads if project is not None else [t for t in threads if not _shelved(t)]
+            settled = sum(1 for t in threads if _is_settled(t))
             out.append({
                 "id": render.short_id(pid) if pid else None,
                 "title": (p or {}).get("title") or "No project",
                 "updated": threads[0].get("updatedAt") if threads else None,
+                "active_updated": active[0].get("updatedAt") if active else None,
                 "total": len(threads),
-                "threads": [self._thread_row(t) for t in threads[:limit]],
+                "settled": settled,
+                "more": max(0, len(active) - limit),
+                "threads": [self._thread_row(t) for t in active[:limit]],
             })
-        out.sort(key=lambda g: g["updated"] or "", reverse=True)
+        # Projects with something active first, most recent first; settled-only ones after.
+        out.sort(key=lambda g: (g["active_updated"] is not None, g["active_updated"] or g["updated"] or ""),
+                 reverse=True)
         body = {"v": self.list_v, "projects": out}
         notice = self.token_keeper.notice() if self.token_keeper else None
         if notice:
@@ -318,7 +336,7 @@ class Bridge:
         prev = render.preview(cached[2]) if cached else (" ".join(lvm.split())[:80] if lvm else "")
         row = {"id": render.short_id(t["id"]), "title": t.get("title") or "Untitled",
                "state": render.thread_state(t), "unread": render.is_unread(t),
-               "updated": t.get("updatedAt"), "preview": prev}
+               "updated": t.get("updatedAt"), "preview": prev, "settled": _is_settled(t)}
         # Surface subagents that need attention on their parent's row.
         states = [render.thread_state(c) for c in self._children(t["id"])]
         if states:
@@ -710,6 +728,21 @@ class Bridge:
         # T3's own default when the setting is absent.
         runtime = override.get("defaultRuntimeMode") or settings.get("defaultRuntimeMode") or "full-access"
         return model, runtime
+
+    def settle(self, short: str, settled: bool = True) -> dict:
+        """Settle a thread (mark it handled, out of the main list) or unsettle it."""
+        self.last_device_at = time.monotonic()
+        t = self._thread(short)
+        if settled:
+            self.client.settle_thread(t["id"])
+        else:
+            self.client.unsettle_thread(t["id"])
+        for _ in range(6):  # until the shell shows it, so the device's next list is right
+            self.refresh()
+            if _is_settled(self.threads.get(t["id"], {})) == settled:
+                break
+            time.sleep(self.settle_delay)
+        return {"ok": True, "settled": _is_settled(self.threads.get(t["id"], {}))}
 
     def start_thread(self, project: str, text: str, client_msg_id: str | None = None) -> dict:
         self.last_device_at = time.monotonic()

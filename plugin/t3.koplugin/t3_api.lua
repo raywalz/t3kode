@@ -138,6 +138,10 @@ function Api:reply(id, reply_id, text, progress, expand)
     })
 end
 
+function Api:settle(id, settled)
+    return self:requestWithRetry("POST", "/v1/threads/" .. id .. "/settle", nil, { settled = settled })
+end
+
 function Api:startThread(project_id, text)
     return self:requestWithRetry("POST", "/v1/threads", nil, {
         project = project_id, text = text, client_msg_id = Api.newMessageId(),

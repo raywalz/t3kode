@@ -56,6 +56,11 @@ when one of its subagents needs attention.
 An optional `notice` (string) reports a problem with the bridge itself, such as its T3
 token expiring within a week without a T3_TOKEN_COMMAND to renew it. Show it prominently.
 
+Like the desktop inbox, the main list leaves out settled threads unless they need you
+or are working. Each project carries `settled` (how many of its threads are settled)
+and `more` (active threads beyond `limit`). With `project=<id>`, the list includes every
+thread in that project, settled ones too, and each row has `settled: true|false`.
+
 `state` is `needs_you | working | failed | done | idle`. `unread` means the last
 run finished after the thread was last opened (on any device). `limit` is per
 project. Pass `project` to get one project's full list.
@@ -154,6 +159,12 @@ choices shows its options as toggles (`kind: "toggle"`, labelled "○ X" / "● 
 plus a `kind: "submit"` Done button with `enabled: false` until something is ticked.
 Ticking is handled by the bridge alone, so it answers instantly. Typed text on such
 a question is added to whatever is ticked.
+
+### `POST /v1/threads/<id>/settle`
+
+`{"settled": true}` settles the thread, like Settle in the app: it leaves the main list.
+`{"settled": false}` unsettles it. Returns `{"ok": true, "settled": …}` once the change
+shows in T3.
 
 ### `POST /v1/threads`
 

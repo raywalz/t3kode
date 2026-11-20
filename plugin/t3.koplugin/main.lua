@@ -230,16 +230,21 @@ end
 function T3:listItems(body, project_filter)
     local items = {}
     for _i, p in ipairs(body.projects or {}) do
-        local shown = #(p.threads or {})
         local header = str(p.title) or _("No project")
-        if not project_filter and type(p.total) == "number" and p.total > shown then
-            header = T(_("%1  (%2 more)"), header, p.total - shown)
+        if not project_filter then
+            -- What tapping the header reveals: more active threads, and the settled ones.
+            local extra = {}
+            local more = tonumber(p.more) or 0
+            local settled = tonumber(p.settled) or 0
+            if more > 0 then table.insert(extra, T(_("%1 more"), more)) end
+            if settled > 0 then table.insert(extra, T(_("%1 settled"), settled)) end
+            if #extra > 0 then header = header .. "  (" .. table.concat(extra, " · ") .. ")" end
         end
         table.insert(items, {
             text = header,
             bold = true,
             callback = function()
-                if not project_filter and str(p.id) then self:showList(p.id, header) end
+                if not project_filter and str(p.id) then self:showList(p.id, str(p.title)) end
             end,
         })
         for _j, t in ipairs(p.threads or {}) do
@@ -257,11 +262,16 @@ function T3:listItems(body, project_filter)
                     and state ~= "needs_you" then
                 label = _("agents working")
             end
+            if t.settled == true and state ~= "needs_you" and state ~= "working" then
+                label = _("settled") .. " · " .. ago(t.updated)
+            end
             table.insert(items, {
                 text = "    " .. (str(t.title) or _("Untitled")),
                 mandatory = label,
                 bold = state == "needs_you" or agent_needs_you or t.unread == true,
+                dim = t.settled == true and state ~= "needs_you" and state ~= "working" or nil,
                 callback = function() self:openThread(t.id) end,
+                hold_callback = function() self:threadActions(t) end,
             })
         end
     end
@@ -303,6 +313,10 @@ function T3:showList(project_id, title)
         if item.callback then item.callback() end
         return true
     end
+    menu.onMenuHold = function(_menu, item)
+        if item.hold_callback then item.hold_callback() end
+        return true
+    end
     menu.onLeftButtonTap = function() self:showListActions() end
     self.list = { menu = menu, v = body.v, params = params, project_id = project_id, parent = self.list }
     UIManager:show(menu)
@@ -338,6 +352,33 @@ function T3:scheduleListPoll()
         self:scheduleListPoll()
     end
     UIManager:scheduleIn(POLL_LIST, self.list_poll)
+end
+
+--- Hold on a thread in the list: settle it (or bring it back).
+function T3:threadActions(t)
+    local settled = t.settled == true
+    local dialog
+    dialog = ButtonDialog:new{
+        title = str(t.title) or _("Thread"),
+        buttons = {
+            {{
+                text = settled and _("Unsettle") or _("Settle"),
+                callback = function()
+                    UIManager:close(dialog)
+                    local ok, err = withBusy(settled and _("Unsettling…") or _("Settling…"), function()
+                        return self.api:settle(t.id, not settled)
+                    end)
+                    if not ok then
+                        notify(err)
+                        return
+                    end
+                    pcall(function() self:refreshList(true) end)
+                end,
+            }},
+            {{ text = _("Cancel"), callback = function() UIManager:close(dialog) end }},
+        },
+    }
+    UIManager:show(dialog)
 end
 
 function T3:showListActions()
@@ -651,23 +692,37 @@ end
 
 --- A text box that grows with its text (up to the space above the keyboard, then it
 --- scrolls). While it's open, background checks don't redraw anything over it.
+local COMPOSE_MIN_LINES = 4
+
 function T3:compose(o)
     local dialog
-    local function grow()
-        -- KOReader sizes the box to its text only when it's built, so rebuild it at the
-        -- new size. Like InputDialog:reinit(), minus its full-screen flash.
+    local function textBox()
+        local w = dialog._input_widget and dialog._input_widget.text_widget
+        local inner = w and (w.text_widget or w)
+        if inner and inner.getAllLineCount and inner.getVisLineCount and inner.getLineHeight then
+            return inner
+        end
+    end
+    -- KOReader sizes the box only when it's built, so resizing means rebuilding it.
+    -- Like InputDialog:reinit(), minus its full-screen flash. `height` nil: fit the text.
+    local function rebuild(height, quiet)
         dialog._t3_rebuilding = true
-        local visible = dialog:isKeyboardVisible()
+        -- Before it's first shown, lay it out for the keyboard that's about to appear.
+        local visible = quiet or dialog:isKeyboardVisible()
         dialog.input = dialog:getInputText()
         dialog:onClose() -- remembers the cursor position for init()
         dialog._input_widget:onCloseWidget()
         dialog:free()
-        dialog.text_height = nil -- let init() measure the text again
+        dialog.text_height = height
         dialog.keyboard_visible = visible and true or false
         dialog:init()
-        if dialog.keyboard_visible then dialog:onShowKeyboard() end
+        if dialog.keyboard_visible and not quiet then dialog:onShowKeyboard() end
         dialog._t3_rebuilding = nil
-        UIManager:setDirty("all", "ui")
+        if not quiet then UIManager:setDirty("all", "ui") end
+    end
+    local function minHeight()
+        local box = textBox()
+        return box and COMPOSE_MIN_LINES * box:getLineHeight()
     end
     dialog = InputDialog:new{
         title = o.title,
@@ -679,23 +734,23 @@ function T3:compose(o)
             dialog._t3_check_queued = true
             UIManager:nextTick(function()
                 dialog._t3_check_queued = nil
-                -- Wrapped line counts of the text box: all lines vs. the lines that fit.
-                local function counts()
-                    local w = dialog._input_widget and dialog._input_widget.text_widget
-                    local inner = w and (w.text_widget or w)
-                    if not inner or not inner.getAllLineCount or not inner.getVisLineCount then return end
-                    return inner:getAllLineCount(), inner:getVisLineCount()
-                end
-                local all, visible = counts()
-                if not all then return end
-                if all > visible and not dialog._t3_full then
-                    grow()
-                    local a2, v2 = counts()
+                local box = textBox()
+                if not box then return end
+                local all, visible = box:getAllLineCount(), box:getVisLineCount()
+                if all <= COMPOSE_MIN_LINES then
+                    -- Short text keeps the fixed four-line box: no resizing, no redraws.
+                    if visible ~= COMPOSE_MIN_LINES then
+                        dialog._t3_full = nil
+                        rebuild(minHeight())
+                    end
+                elseif all > visible and not dialog._t3_full then
+                    rebuild(nil)
+                    box = textBox()
                     -- Still more lines than fit: it's as tall as the screen allows; scroll now.
-                    dialog._t3_full = a2 and a2 > v2 or nil
+                    dialog._t3_full = box and box:getAllLineCount() > box:getVisLineCount() or nil
                 elseif all < visible then
                     dialog._t3_full = nil
-                    grow() -- shrink back after deleting lines
+                    rebuild(nil) -- shrink back after deleting lines
                 end
             end)
         end,
@@ -717,6 +772,8 @@ function T3:compose(o)
         InputDialog.onCloseWidget(d)
         self:endTyping()
     end
+    -- Start at four lines (sized before it's shown, so it costs no extra redraw).
+    rebuild(minHeight(), true)
     self.typing = true
     UIManager:show(dialog)
     dialog:onShowKeyboard()

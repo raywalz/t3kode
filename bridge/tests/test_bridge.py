@@ -70,6 +70,14 @@ class FakeT3:
     def respond_user_input(self, *a, **kw):
         return self._record("respond_user_input", *a, **kw)
 
+    def settle_thread(self, tid):
+        self.threads[tid] = dict(self.threads[tid], settledOverride="settled")
+        return self._record("settle_thread", tid)
+
+    def unsettle_thread(self, tid):
+        self.threads[tid] = dict(self.threads[tid], settledOverride="active")
+        return self._record("unsettle_thread", tid)
+
     def stop_thread(self, *a, **kw):
         return self._record("stop_thread", *a, **kw)
 
@@ -271,6 +279,26 @@ class BridgeTests(unittest.TestCase):
         changed, view = self.b.wait_view(boss, v, timeout=0.5, progress=True)
         self.assertTrue(changed)
         self.assertEqual(view["entries"][-1]["text"], "Agent: Research the API · done")
+
+    def test_settle_moves_thread_out_of_main_list(self):
+        def rows(**kw):
+            return {t["id"]: t for p in self.b.thread_list(**kw)["projects"] for t in p["threads"]}
+        v = self.b.thread_list()["v"]
+        self.assertEqual(self.b.settle(self.s1), {"ok": True, "settled": True})
+        self.assertNotIn(self.s1, rows())
+        self.assertTrue(self.b.wait_list(v, timeout=0.05))  # the list changed
+        alpha = next(p for p in self.b.thread_list()["projects"] if p["title"] == "Alpha")
+        self.assertEqual(alpha["settled"], 1)
+        self.assertTrue(rows(project=alpha["id"])[self.s1]["settled"])  # still in its project
+        self.b.settle(self.s1, settled=False)
+        self.assertIn(self.s1, rows())
+
+    def test_settled_thread_that_needs_you_stays_listed(self):
+        self.t3.threads["t1"] = dict(self.t3.threads["t1"], settledOverride="settled",
+                                     pendingRuntimeRequest={"id": "r"})
+        self.b.refresh()
+        rows = {t["id"] for p in self.b.thread_list()["projects"] for t in p["threads"]}
+        self.assertIn(self.s1, rows)
 
     def test_view_window_and_after(self):
         v = self.b.thread_view(self.s1, turns=1)

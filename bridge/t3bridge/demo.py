@@ -104,7 +104,7 @@ def _threads():
         ("assistant_message", {"text": "Here's a draft in `posts/launch.md`. It's about 400 words, "
                                        "with a screenshot placeholder at the top.", "streaming": False}),
     ]))
-    thread("seo", "site", "Fix broken links", "completed", 1500, _run("r7", 1520, [
+    thread("seo", "site", "Fix broken links", "completed", 1500, settledOverride="settled", items=_run("r7", 1520, [
         ("user_message", {"text": "Find and fix broken links."}),
         ("command_execution", {"input": "npx linkinator ./public --recurse"}),
         ("assistant_message", {"text": "Fixed 4 broken links. Two pointed at an old docs domain.",
@@ -207,6 +207,16 @@ class DemoT3:
 
     def respond_user_input(self, tid, request_id, answers, **_kw):
         return self.respond_approval(tid, request_id, "accept")
+
+    def settle_thread(self, tid):
+        with self.lock:
+            self.threads[tid]["settledOverride"] = "settled"
+        return {"sequence": 1}
+
+    def unsettle_thread(self, tid):
+        with self.lock:
+            self.threads[tid]["settledOverride"] = "active"
+        return {"sequence": 1}
 
     def stop_thread(self, tid, **_kw):
         with self.lock:
