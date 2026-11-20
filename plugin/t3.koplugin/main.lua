@@ -60,27 +60,25 @@ function T3:makeApi()
     self.api = Api.new(self.settings:readSetting("bridge_url"), self.settings:readSetting("bridge_token"))
 end
 
--- Put "T3 Code" at the top of the first menu tab, in both the file browser and the
--- reader. The menu order tables are shared modules that plugins may extend (KOReader's
--- own ui/plugin/insert_menu does the same for "More tools"). Done once per process.
-local function placeFirstInMenu()
+-- Put "T3 Code" first in the Tools tab of both the file browser and the reader.
+-- The menu order tables are shared modules that plugins may extend (KOReader's own
+-- ui/plugin/insert_menu does the same for "More tools"). Done once per process.
+local function placeFirstInTools()
     for _i, name in ipairs({ "ui/elements/filemanager_menu_order", "ui/elements/reader_menu_order" }) do
         local ok, order = pcall(require, name)
-        local tabs = ok and type(order) == "table" and order["KOMenu:menu_buttons"]
-        local first = type(tabs) == "table" and order[tabs[1]]
-        if type(first) == "table" then
+        if ok and type(order) == "table" and type(order.tools) == "table" then
             local present = false
-            for _j, id in ipairs(first) do
+            for _j, id in ipairs(order.tools) do
                 if id == "t3" then present = true end
             end
-            if not present then table.insert(first, 1, "t3") end
+            if not present then table.insert(order.tools, 1, "t3") end
         end
     end
 end
 
 function T3:addToMainMenu(menu_items)
-    placeFirstInMenu()
-    -- One tap from the first menu tab opens the thread list.
+    placeFirstInTools()
+    -- One tap from the Tools tab opens the thread list.
     menu_items.t3 = {
         text = _("T3 Code"),
         callback = function() self:onT3Open() end,
