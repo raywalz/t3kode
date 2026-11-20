@@ -479,9 +479,11 @@ class Bridge:
         if state in ("done", "failed") and self._wants_suggestions(t["id"]):
             self._await_suggestions(t, cursor)
 
-        if visit and render.is_unread(t):
+        unread = render.is_unread(t)
+        if visit and unread:
             try:
                 self.client.visit_thread(t["id"], _now_iso())
+                unread = False  # the snapshot catches up on the next poll
             except Exception as e:
                 log.warning("visit failed: %s", e)
 
@@ -493,6 +495,10 @@ class Bridge:
             "mode": "plan" if t.get("interactionMode") == "plan" else "default",
             "plan_mode": self._plan_mode_ok(t.get("modelSelection")),
             "prs": render.pull_requests(t),
+            # For the thread menu (hold the title): the same fields as a list row.
+            "settled": _is_settled(t), "pinned": bool(t.get("pinnedAt")),
+            "snoozed_until": t["snoozedUntil"] if _snoozed(t) else None,
+            "can_mark_unread": bool(t.get("latestRunCompletedAt")) and not unread,
             "parent": ({"id": render.short_id(parent["id"]), "title": parent.get("title") or "Untitled"}
                        if parent and _is_subagent(t) else None),
             "cursor": cursor, "more_before": more_before, "entries": shown,

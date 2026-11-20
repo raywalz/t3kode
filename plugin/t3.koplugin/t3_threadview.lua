@@ -10,6 +10,7 @@ local Blitbuffer = require("ffi/blitbuffer")
 local ButtonTable = require("ui/widget/buttontable")
 local Device = require("device")
 local FrameContainer = require("ui/widget/container/framecontainer")
+local GestureRange = require("ui/gesturerange")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local ScrollHtmlWidget = require("ui/widget/scrollhtmlwidget")
 local Size = require("ui/size")
@@ -66,6 +67,7 @@ local ThreadView = InputContainer:extend{
     anchor_uri = nil, -- or on the page with the link to this uri (the start of the agent's reply)
     refresh = "full", -- e-ink refresh on show: "full" flashes to clear ghosting, "ui" doesn't
     close_callback = nil,
+    title_hold_callback = nil, -- function() for a hold on the title bar
     link_callback = nil, -- function(uri) for taps on links in the HTML
     resource_dir = nil, -- folder that <img src="name"> in the HTML is relative to
     covers_fullscreen = true,
@@ -144,6 +146,17 @@ function ThreadView:init()
     if Device:hasKeys() then
         self.key_events = { Close = { { Device.input.group.Back } } }
     end
+    if self.title_hold_callback then
+        self.ges_events = {
+            -- The title bar's own buttons (close) still get their taps and holds first.
+            HoldTitle = { GestureRange:new{ ges = "hold", range = function() return self.titlebar.dimen end } },
+        }
+    end
+end
+
+function ThreadView:onHoldTitle()
+    self.title_hold_callback()
+    return true
 end
 
 --- The page with a link to `uri`, searching from the end; nil if there is none.

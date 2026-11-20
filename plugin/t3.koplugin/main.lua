@@ -425,18 +425,33 @@ function T3:scheduleListPoll()
     UIManager:scheduleIn(POLL_LIST, self.list_poll)
 end
 
---- Run a thread action from the list, then show the list as it now is.
-function T3:listAction(busy_text, fn)
+--- Run a thread action, then `done(kind)` shows the result (by default: the list as
+--- it now is).
+function T3:listAction(busy_text, fn, done, kind)
     local ok, err = withBusy(busy_text, fn)
     if not ok then
         notify(err)
         return
     end
+    if done then return done(kind) end
     pcall(function() self:refreshList(true) end)
 end
 
+--- Hold the title of an open thread: the same menu as holding it in the list. After an
+--- action the thread redraws in place; after Archive it closes.
+function T3:viewActions(view)
+    self:threadActions(view, function(kind)
+        if not self.view or self.view.id ~= view.id then return end -- closed meanwhile
+        if kind == "archive" then
+            if self.viewer then self.viewer:onClose() end
+        else
+            self:reloadThread(view.id, self.viewer and self.viewer:currentPage() or nil)
+        end
+    end)
+end
+
 --- The app's snooze choices. This evening only while it's more than an hour away.
-function T3:snoozeThread(t)
+function T3:snoozeThread(t, done)
     local presets = {
         { "hour", _("In 1 hour") },
         { "three-hours", _("In 3 hours") },
@@ -456,7 +471,7 @@ function T3:snoozeThread(t)
                 UIManager:close(dialog)
                 self:listAction(_("Snoozing…"), function()
                     return self.api:threadAction(t.id, "snooze", p[1])
-                end)
+                end, done, "snooze")
             end,
         }})
     end
@@ -480,9 +495,9 @@ function T3:projectActions(p)
     UIManager:show(dialog)
 end
 
---- Hold on a thread in the list: the app's thread menu (pin, snooze, mark unread,
---- settle, archive).
-function T3:threadActions(t)
+--- Hold on a thread in the list (or the title of an open one): the app's thread menu
+--- (pin, snooze, mark unread, settle, archive). `done(kind)`: what to show afterwards.
+function T3:threadActions(t, done)
     local settled = t.settled == true
     local pinned = t.pinned == true
     local snoozed = str(t.snoozed_until) ~= nil
@@ -494,7 +509,7 @@ function T3:threadActions(t)
             text = text,
             callback = function()
                 UIManager:close(dialog)
-                self:listAction(busy_text, fn)
+                self:listAction(busy_text, fn, done)
             end,
         }}
     end
@@ -509,7 +524,7 @@ function T3:threadActions(t)
             text = _("Snooze…"),
             callback = function()
                 UIManager:close(dialog)
-                self:snoozeThread(t)
+                self:snoozeThread(t, done)
             end,
         }})
     end
@@ -532,7 +547,7 @@ function T3:threadActions(t)
                     ok_callback = function()
                         self:listAction(_("Archiving…"), function()
                             return self.api:threadAction(t.id, "archive")
-                        end)
+                        end, done, "archive")
                     end,
                 })
             end,
@@ -990,6 +1005,7 @@ function T3:showThread(view, opts)
         start_page = page,
         anchor_uri = anchor and ANCHOR or nil,
         refresh = (opts.update and old) and "ui" or "full",
+        title_hold_callback = function() self:viewActions(view) end,
         link_callback = function(uri)
             if uri == "t3:older" then
                 return self:showOlder(view, view.entries and view.entries[1] and view.entries[1].o)

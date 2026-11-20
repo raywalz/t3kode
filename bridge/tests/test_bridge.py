@@ -705,6 +705,14 @@ class BridgeTests(unittest.TestCase):
         # A project's own list shows it first, in place.
         self.assertEqual(self.b.thread_list(project=render.short_id("p2"))["projects"][0]["threads"][0]["title"],
                          "Thread t2")
+        # The thread view carries the same fields, for its own thread menu.
+        v = self.b.thread_view(self.s2)
+        self.assertEqual((v["pinned"], v["settled"], v["snoozed_until"]), (True, False, None))
+        # Opening an unread thread marks it read, so it can be marked unread again at once.
+        self.t3.threads["t1"] = dict(self.t3.threads["t1"], lastVisitedAt="2025-01-01T00:00:00Z")
+        self.b.refresh()
+        self.assertFalse(self.b.thread_view(self.s1)["can_mark_unread"])
+        self.assertTrue(self.b.thread_view(self.s1, visit=True)["can_mark_unread"])
         self.b.thread_action(self.s2, "unpin")
         self.assertNotIn("Pinned", self._titles(self.b.thread_list()))
 

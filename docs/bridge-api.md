@@ -159,6 +159,8 @@ uses it. Returns the new thread view. Choosing the current model changes nothing
   plan mode at all (T3 hides its Plan toggle for providers that don't).
 - A proposed plan stays visible when its turn folds, as in the app. The message that
   implements one shows as "Implement the plan." rather than repeating the plan.
+- `settled`, `pinned`, `snoozed_until` and `can_mark_unread`: as in a list row, for the
+  thread menu (hold the title).
 - `prs`: the thread's linked pull requests, open ones first, as T3 last read them (it
   checks open ones every few minutes): `{number, repo, url, title, open, status}`, where
   `status` sums one up like the app's PR row: `open · checks pass · needs review ·
