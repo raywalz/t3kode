@@ -197,6 +197,11 @@ class RenderTests(unittest.TestCase):
                                       questionAnswer={"answers": {"q": "Red"}})])
         self.assertEqual(e[0]["text"], "Q: Red or blue? → Red")
 
+    def test_open_question_is_left_to_the_pending_box(self):
+        q = [{"id": "q", "question": "Red or blue?"}]
+        self.assertEqual(render.render_items([item(1, "user_input_request", status="running",
+                                                   requestId="r", questions=q)]), [])
+
     def test_states(self):
         self.assertEqual(render.thread_state(thread("a", pendingRuntimeRequest={"id": "r"})), "needs_you")
         self.assertEqual(render.thread_state(thread("a", status="waiting")), "working")
@@ -337,6 +342,23 @@ class BridgeTests(unittest.TestCase):
         self.b.reply(self.s1, text="Medium, please")  # typed custom answer
         self.assertEqual(self.t3.calls[-1][:2],
                          ("respond_user_input", ("t1", "req1", {"q1": "Blue", "q2": "Medium, please"})))
+
+    def test_multiple_choice_ticks_then_done(self):
+        q = {"id": "q1", "header": "Langs", "question": "Which languages?", "multiSelect": True,
+             "options": [{"label": "Go"}, {"label": "Rust"}, {"label": "Lua"}]}
+        self._make_pending("user_input", item(9, "user_input_request", requestId="req1", questions=[q]))
+        v = self.b.thread_view(self.s1)
+        self.assertEqual([r["label"] for r in v["replies"]][:4], ["○ Go", "○ Rust", "○ Lua", "Done"])
+        self.assertFalse(v["replies"][3]["enabled"])
+        self.b.settle_delay = 0.3  # a real wait for T3, which ticks must skip
+        t0 = time.monotonic()
+        v = self.b.reply(self.s1, reply_id=v["replies"][2]["id"])  # Lua
+        v = self.b.reply(self.s1, reply_id=v["replies"][0]["id"])  # Go
+        self.assertLess(time.monotonic() - t0, 1.0)  # ticks don't wait for T3
+        self.assertEqual([r["label"] for r in v["replies"]][:4], ["● Go", "○ Rust", "● Lua", "Done (2 picked)"])
+        self.assertFalse([c for c in self.t3.calls if c[0] == "respond_user_input"])
+        self.b.reply(self.s1, reply_id=v["replies"][3]["id"])
+        self.assertEqual(self.t3.calls[-1][:2], ("respond_user_input", ("t1", "req1", {"q1": ["Go", "Lua"]})))
 
     def test_wait_wakes_on_change(self):
         v = self.b.thread_view(self.s2)["v"]

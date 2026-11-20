@@ -146,8 +146,11 @@ twice, and the bridge derives T3's command ID from it, so T3 also drops duplicat
 Generate a fresh one per tap and reuse it when retrying that tap.
 
 Multi-question requests are answered one question at a time. The answers are
-submitted to T3 together after the last one. Questions that allow several
-choices currently take a single tap.
+submitted to T3 together after the last one. A question that allows several
+choices shows its options as toggles (`kind: "toggle"`, labelled "○ X" / "● X")
+plus a `kind: "submit"` Done button with `enabled: false` until something is ticked.
+Ticking is handled by the bridge alone, so it answers instantly. Typed text on such
+a question is added to whatever is ticked.
 
 ### `POST /v1/threads`
 

@@ -112,6 +112,7 @@ class Bridge:
         self.pending: dict[str, tuple[tuple, list[dict]]] = {}
         self.suggestions: dict[str, dict] = {}  # long id -> {cursor, status, items}
         self.partial_answers: dict[str, dict] = {}  # request id -> {question id: answer}
+        self.multi_picks: dict[tuple, list[str]] = {}  # (request id, question id) -> ticked labels
         self.done_requests: OrderedDict[str, dict] = OrderedDict()  # client_msg_id -> response
         self.last_device_at = 0.0
         self.stop_capability = True
@@ -406,8 +407,17 @@ class Bridge:
             if capability == "not_resumable":
                 view["note"] = "This question can no longer be answered."
                 return view, [], "message"
-            buttons = [{"id": f"q:{rshort}:{qi}:{oi}", "label": o.get("label"), "kind": "answer"}
-                       for oi, o in enumerate(q.get("options", []))]
+            if q.get("multiSelect"):
+                # Tap to tick options (● picked, ○ not), then Done sends them together.
+                picked = self.multi_picks.get((req["id"], q["id"]), [])
+                buttons = [{"id": f"m:{rshort}:{qi}:{oi}", "kind": "toggle",
+                            "label": ("● " if o.get("label") in picked else "○ ") + str(o.get("label"))}
+                           for oi, o in enumerate(q.get("options", []))]
+                buttons.append({"id": f"d:{rshort}:{qi}", "kind": "submit", "enabled": bool(picked),
+                                "label": f"Done ({len(picked)} picked)" if picked else "Done"})
+            else:
+                buttons = [{"id": f"q:{rshort}:{qi}:{oi}", "label": o.get("label"), "kind": "answer"}
+                           for oi, o in enumerate(q.get("options", []))]
             typed = "message" if capability == "message" else (
                 "answer" if q.get("allowCustomAnswer", True) is not False else "none")
             buttons.append({"id": "c:stop", "label": "Stop", "kind": "shortcut"})
@@ -532,12 +542,13 @@ class Bridge:
         def act():
             before = _wake_key(t)
             if reply_id:
-                self._do_reply(t, reply_id, client_msg_id)
+                sent = self._do_reply(t, reply_id, client_msg_id)
             elif text and text.strip():
-                self._do_text(t, text.strip(), client_msg_id)
+                sent = self._do_text(t, text.strip(), client_msg_id)
             else:
                 raise BridgeError(400, "send `reply` or `text`")
-            self._settle(t["id"], before)
+            if sent is not False:  # False: handled here (a tick, a first answer); T3 won't react
+                self._settle(t["id"], before)
             return self.thread_view(short, progress=progress, expand=expand)
 
         return self._once(client_msg_id, act)
@@ -574,7 +585,7 @@ class Bridge:
             self.client.send_message(tid, sug["items"][int(idx)], command_id=_stable_id(cmid, "c"),
                                      message_id=_stable_id(cmid, "m"))
             return
-        elif kind in ("a", "q"):
+        elif kind in ("a", "q", "m", "d"):
             pending = self._pending(t)
             match = next((p for p in pending if render.short_id(p["request"]["id"]) == rest.split(":")[0]), None)
             if match is None:
@@ -586,12 +597,30 @@ class Bridge:
                     raise BridgeError(400, "unknown decision")
                 self.client.respond_approval(tid, req["id"], decision, command_id=_stable_id(cmid, "c"))
                 return
-            _, qi, oi = rest.split(":")
             questions = (match["item"] or {}).get("questions", [])
-            q = questions[int(qi)]
-            label = q["options"][int(oi)]["label"]
-            self._answer(t, match, q, label, cmid)
-            return
+            parts = rest.split(":")
+            try:
+                q = questions[int(parts[1])]
+            except (IndexError, ValueError):
+                raise BridgeError(400, "unknown question") from None
+            if kind == "d":
+                picked = self.multi_picks.get((req["id"], q["id"]), [])
+                if not picked:
+                    raise BridgeError(400, "pick at least one option")
+                return self._answer(t, match, q, list(picked), cmid)
+            label = q["options"][int(parts[2])]["label"]
+            if kind == "m":
+                key = (req["id"], q["id"])
+                picked = self.multi_picks.setdefault(key, [])
+                if label in picked:
+                    picked.remove(label)
+                else:
+                    picked.append(label)
+                order = [o["label"] for o in q["options"]]
+                picked.sort(key=order.index)
+                self._redraw(tid)
+                return False
+            return self._answer(t, match, q, label, cmid)
         raise BridgeError(400, "unknown reply")
 
     def _do_text(self, t: dict, text: str, cmid: str | None) -> None:
@@ -605,31 +634,44 @@ class Bridge:
                 answers = self.partial_answers.get(p["request"]["id"], {})
                 q = next((q for q in questions if q["id"] not in answers), None)
                 if q is not None and capability == "live" and q.get("allowCustomAnswer", True) is not False:
-                    self._answer(t, p, q, text, cmid)
-                    return
+                    return self._answer(t, p, q, text, cmid)
         self.client.send_message(t["id"], text, command_id=_stable_id(cmid, "c"),
                                  message_id=_stable_id(cmid, "m"))
 
-    def _answer(self, t: dict, p: dict, q: dict, answer: str, cmid: str | None) -> None:
-        """Record one question's answer; submit once every question has one."""
+    def _answer(self, t: dict, p: dict, q: dict, answer, cmid: str | None) -> bool:
+        """Record one question's answer (a label, typed text, or a list of labels for a
+        multiple-choice question); submit once every question has one.
+        Returns True if anything was sent to T3."""
         req = p["request"]
         capability = (req.get("responseCapability") or {}).get("type")
         if capability == "message":
-            self.client.send_message(t["id"], answer, command_id=_stable_id(cmid, "c"),
+            text = ", ".join(answer) if isinstance(answer, list) else answer
+            self.client.send_message(t["id"], text, command_id=_stable_id(cmid, "c"),
                                      message_id=_stable_id(cmid, "m"))
-            return
+            return True
+        if q.get("multiSelect") and not isinstance(answer, list):
+            # Typed text on a multiple-choice question: add it to whatever is ticked.
+            answer = self.multi_picks.get((req["id"], q["id"]), []) + [answer]
         answers = self.partial_answers.setdefault(req["id"], {})
-        answers[q["id"]] = [answer] if q.get("multiSelect") else answer
+        answers[q["id"]] = answer
         questions = (p["item"] or {}).get("questions", [])
         if all(x["id"] in answers for x in questions):
             self.client.respond_user_input(t["id"], req["id"], dict(answers),
                                            command_id=_stable_id(cmid, "c"))
             self.partial_answers.pop(req["id"], None)
+            for x in questions:
+                self.multi_picks.pop((req["id"], x["id"]), None)
+            return True
         else:
             # Next question: the view changes without anything changing in T3.
-            with self.cond:
-                self._bump(t["id"])
-                self.cond.notify_all()
+            self._redraw(t["id"])
+            return False
+
+    def _redraw(self, tid: str) -> None:
+        """The device's view changed without any change in T3."""
+        with self.cond:
+            self._bump(tid)
+            self.cond.notify_all()
 
     def _stop_thread(self, t: dict, cmid: str | None) -> None:
         if self.stop_capability:

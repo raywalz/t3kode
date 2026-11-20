@@ -388,6 +388,7 @@ local function composeHtml(view)
         local opts = {}
         for _i, o in ipairs(type(p.options) == "table" and p.options or {}) do
             local desc = str(o.description)
+            if desc == str(o.label) then desc = nil end -- "Apple: Apple" says nothing
             table.insert(opts, "<li><b>" .. esc(str(o.label)) .. "</b>" .. (desc and (": " .. esc(desc)) or "") .. "</li>")
         end
         if #opts > 0 then table.insert(lines, "<ul>" .. table.concat(opts) .. "</ul>") end
@@ -410,7 +411,8 @@ function T3:threadButtons(view)
         local id = str(r.id)
         local button = {
             text = SHORT_LABELS[id] or str(r.label) or id,
-            callback = function() self:sendReply(view, id) end,
+            enabled = r.enabled ~= false,
+            callback = function() self:sendReply(view, id, r.kind == "toggle") end,
         }
         if r.kind == "shortcut" then
             table.insert(shortcuts, button)
@@ -576,11 +578,14 @@ function T3:scheduleThreadPoll()
     UIManager:scheduleIn(interval, self.thread_poll)
 end
 
-function T3:sendReply(view, reply_id)
+function T3:sendReply(view, reply_id, quiet)
     local function go()
-        local ok, result = withBusy(_("Sending…"), function()
+        local function send()
             return self.api:reply(view.id, reply_id, nil, self:showProgress(), self:expandList(view.id))
-        end)
+        end
+        -- Ticking an option is instant; a "Sending…" popup would only add flicker.
+        local ok, result
+        if quiet then ok, result = send() else ok, result = withBusy(_("Sending…"), send) end
         if ok then
             self:showThread(result, { update = true, page = math.huge })
         else
