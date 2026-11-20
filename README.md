@@ -1,48 +1,86 @@
 # t3-koreader
 
-An e-ink client for [T3 Code](https://github.com/pingdotgg/t3code): browse threads,
-read conversations, and reply from a KOReader device (Kobo, Kindle, etc.).
+Read and reply to [T3 Code](https://github.com/pingdotgg/t3code) threads from an
+e-reader running [KOReader](https://koreader.rocks) (Kobo, Kindle, PocketBook, …).
 
-Status: experimental.
+Replying is tap-first: answer the agent's questions and approvals with a tap, pick
+one of a few suggested replies, or tap Continue / Summarize / Stop. The on-screen
+keyboard is there for everything else.
 
-## Pieces
+<p>
+<img src="docs/screenshots/thread-list.png" width="32%" alt="Thread list grouped by project, with needs-you, working and done states">
+<img src="docs/screenshots/thread-view.png" width="32%" alt="A finished thread: the work folded into one row, the reply with a table and code, and suggested replies as buttons">
+<img src="docs/screenshots/approval.png" width="32%" alt="A thread waiting for approval, with Allow, Allow for session and Decline buttons">
+</p>
 
-- **Bridge** (runs next to the T3 server): talks to T3's API and serves a small,
-  e-ink-friendly API to the device. Also generates suggested replies.
-- **`t3.koplugin`** (runs in KOReader): thread list, conversation view, tap-to-reply
-  (multiple choice), optional on-screen keyboard.
+Status: experimental, but in daily use on a Kobo Clara BW.
 
-## Running the bridge
+## What it does
 
-Needs Python 3.12 and a running T3 Code server. There are no dependencies.
+- **Thread list** grouped by project, marked *needs you*, *working*, *done*, or *failed*,
+  with unread threads in bold. Subagent threads live under their parent, which shows
+  when one of them needs you.
+- **Thread view** that reads well on e-ink: formatted messages (headings, lists,
+  tables, code), tool calls collapsed into one-line markers, and finished turns folded
+  into "Worked for 1m 12s" like T3's own apps. Tap a fold to see its steps, or a
+  subagent to open its thread.
+- **Replies:** T3's pending approvals (Allow / Allow for session / Decline) and questions
+  (single or multiple choice) are buttons, answered the same way the desktop app
+  answers them. After each turn, a small model suggests a few likely replies. Typed
+  replies use a box that grows with the text.
+- **E-ink friendly updates:** the screen redraws only when what it shows changes, without
+  a full-screen flash. Optionally, follow a turn's steps as they happen.
+- **Reconnects** cleanly when the device wakes up, and a retried tap is never sent twice.
+
+## How it fits together
+
+```
+e-reader (KOReader + t3.koplugin)  ──HTTP/JSON──▶  bridge  ──T3's API──▶  T3 Code server
+```
+
+- **The bridge** (`bridge/`, Python 3.12, standard library only) runs next to the T3
+  server. It holds the T3 credential, talks to T3's HTTP and WebSocket API, and serves
+  a small, e-ink-friendly API to the device. It also generates suggested replies with
+  any OpenAI-compatible endpoint.
+- **The plugin** (`plugin/t3.koplugin`) is a thin client built from KOReader's own
+  widgets. All T3-specific work happens on the bridge.
+
+## Setup
+
+### 1. Run the bridge
+
+Needs Python 3.12 and a T3 Code server on the same machine. There are no dependencies.
 
 ```sh
-cp .env.example .env    # fill in T3_TOKEN, BRIDGE_TOKEN, and optionally SUGGEST_*
+cp .env.example .env    # then fill it in; every setting is explained there
 cd bridge && python3 -m t3bridge
 ```
 
-Try it from the same machine:
+`.env` needs at least:
+
+- `T3_TOKEN`: a scoped session token. Mint one with
+  `t3 auth session issue --scope orchestration:read --scope orchestration:operate --ttl 30d --token-only`.
+  Set `T3_TOKEN_COMMAND` to that same command and the bridge renews the token by itself.
+- `BRIDGE_HOST` / `BRIDGE_TOKEN`: an address the e-reader can reach (a LAN or VPN
+  address such as Tailscale's), and a secret for the device. The bridge refuses to listen
+  beyond loopback without a token.
+- Optionally `SUGGEST_URL`, `SUGGEST_API_KEY`, `SUGGEST_MODEL` for suggested replies.
+
+Check it from the same machine:
 
 ```sh
-curl -H "authorization: Bearer $BRIDGE_TOKEN" http://127.0.0.1:8787/v1/threads
+curl -H "authorization: Bearer $BRIDGE_TOKEN" http://<bridge host>:8787/v1/threads
 ```
 
-To keep it running, install it as a systemd user service; see the comments at the
-top of [contrib/t3-bridge.service](contrib/t3-bridge.service).
+To keep it running, install it as a systemd user service. The steps are at the top of
+[contrib/t3-bridge.service](contrib/t3-bridge.service).
 
-The device API is described in [docs/bridge-api.md](docs/bridge-api.md). Run the
-tests with `cd bridge && python3 -m unittest discover -s tests`.
-
-## Installing the KOReader plugin
+### 2. Install the plugin
 
 Copy `plugin/t3.koplugin` into KOReader's `plugins/` folder (over USB or SSH) and
-restart KOReader. Then open **Tools → T3 Code** and set **Bridge address**
-(for example `http://<bridge host>:8787`) and **Bridge token** (the
-`BRIDGE_TOKEN` from `.env`). The bridge must listen on an address the e-reader
-can reach; see `BRIDGE_HOST` in `.env.example`.
-
-You can also write the settings file directly to
-`koreader/settings/t3.lua`:
+restart KOReader. Open **Tools → T3 Code**, then set **Bridge address**
+(`http://<bridge host>:8787`) and **Bridge token**. Or write the settings file
+`koreader/settings/t3.lua` directly:
 
 ```lua
 return {
@@ -51,15 +89,27 @@ return {
 }
 ```
 
-## Trying the API test
+Then **Tools → T3 Code → Threads**. You can also bind that to a gesture: the action is
+"T3 Code threads".
 
-A standalone check of T3's own API, without the bridge:
+## Trying it without T3
 
 ```sh
-python3 bridge/api_test.py                         # read-only: lists threads
-python3 bridge/api_test.py --project <id|title>    # creates, messages, reads, deletes a test thread
-python3 bridge/api_test.py --project <id|title> --requests   # also answers an approval and a question
+cd bridge && python3 -m t3bridge --demo
 ```
 
-The write test only ever messages the thread it creates. Protocol notes are in
-[docs/t3-api.md](docs/t3-api.md).
+This serves made-up projects and threads (the ones in the screenshots), with canned
+replies, so you can try the plugin before setting up T3. Point the plugin at it with
+an empty token, or set `BRIDGE_TOKEN`.
+
+## Development
+
+- Tests: `cd bridge && python3 -m unittest discover -s tests`
+- Device API: [docs/bridge-api.md](docs/bridge-api.md)
+- Notes on T3's API, including which parts look stable: [docs/t3-api.md](docs/t3-api.md)
+- `bridge/api_test.py` checks T3's API directly, without the bridge. It reads by default;
+  with `--project` it creates a throwaway thread, messages it, and deletes it.
+
+KOReader's desktop build is handy for working on the plugin's screens. Run it with
+`EMULATE_READER_W=1072 EMULATE_READER_H=1448 EMULATE_READER_DPI=300` to match a
+Kobo Clara BW.

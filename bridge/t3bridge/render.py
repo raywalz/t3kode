@@ -416,8 +416,9 @@ def render_items(items: list[dict], child_info=None) -> list[dict]:
                 clipped = text if len(text) <= 600 else text[:599] + "…"
                 entries.append({"o": o, "role": "note", "text": clipped, "html": text_html(clipped)})
         else:
-            if (kind == "user_input_request" and item.get("status") in ("idle", "pending", "running", "waiting")
-                    and not (item.get("questionAnswer") or {}).get("answers")):
+            open_ = item.get("status") in ("idle", "pending", "running", "waiting")
+            if open_ and (kind == "approval_request" or (
+                    kind == "user_input_request" and not (item.get("questionAnswer") or {}).get("answers"))):
                 continue  # still waiting: the view's "Needs you" box shows it
             note = _note(item)
             if note is None:

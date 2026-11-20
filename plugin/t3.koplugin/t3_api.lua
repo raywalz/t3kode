@@ -28,7 +28,7 @@ function Api.new(base_url, token)
 end
 
 function Api:configured()
-    return self.base_url ~= "" and self.token ~= ""
+    return self.base_url ~= "" -- a token is optional (e.g. a bridge on a trusted network)
 end
 
 local function urlencode(s)
@@ -57,7 +57,7 @@ end
 --- Returns ok, body_or_error_message, http_status.
 function Api:request(method, path, params, body)
     if not self:configured() then
-        return false, "Set the bridge address and token first."
+        return false, "Set the bridge address first (Tools → T3 Code)."
     end
     local sink = {}
     local data = body and JSON.encode(body) or nil
@@ -66,10 +66,12 @@ function Api:request(method, path, params, body)
         method = method,
         sink = ltn12.sink.table(sink),
         headers = {
-            ["Authorization"] = "Bearer " .. self.token,
             ["Accept"] = "application/json",
         },
     }
+    if self.token ~= "" then
+        request.headers["Authorization"] = "Bearer " .. self.token
+    end
     if data then
         request.source = ltn12.source.string(data)
         request.headers["Content-Type"] = "application/json"
