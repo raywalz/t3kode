@@ -291,6 +291,26 @@ In entry `html`, an image is `<a href="t3:img:<id>"><img src="t3img:<id>" alt="�
 The device swaps `t3img:<id>` for its downloaded copy, or replaces the whole link with a
 placeholder.
 
+### `GET /v1/threads/<id>/browser`
+
+The thread's preview browser tabs, view only:
+
+```json
+{"tabs": [{"id": "tab_8_…", "title": "E Ink - Wikipedia", "url": "https://…",
+           "status": "ok", "viewable": true}]}
+```
+
+`status` is `ok`, `loading` or `failed`. A blank tab has `"title": "Blank tab"` and an empty
+`url`. `viewable` is false for a tab open in the desktop app's own window: T3 can only share
+tabs that run on its server, which is where agents' tabs run.
+
+### `GET /v1/threads/<id>/browser/snapshot?tab=<tab id>&w=<pixels>`
+
+What the tab shows right now: an image at most `w` pixels wide (grayscale PNG with
+ImageMagick, else T3's JPEG). Sent with `cache-control: no-store`; fetch again to refresh.
+Taking one never takes control of the tab from the agent or another viewer.
+Errors: 404 if the tab closed, 409 if it isn't `viewable`, 503 if T3's browser can't start.
+
 ### `GET /v1/health`
 
 `{"ok": true, "list_v": 262}`

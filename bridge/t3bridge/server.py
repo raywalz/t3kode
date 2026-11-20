@@ -61,6 +61,8 @@ def make_handler(bridge: Bridge, device_token: str):
         ("POST", re.compile(r"^/v1/threads/(\w+)/secret$"), "secret"),
         ("POST", re.compile(r"^/v1/threads/(\w+)/model$"), "set_model"),
         ("POST", re.compile(r"^/v1/threads/(\w+)/action$"), "action"),
+        ("GET", re.compile(r"^/v1/threads/(\w+)/browser$"), "browser"),
+        ("GET", re.compile(r"^/v1/threads/(\w+)/browser/snapshot$"), "browser_snapshot"),
     ]
 
     class Handler(BaseHTTPRequestHandler):
@@ -79,11 +81,11 @@ def make_handler(bridge: Bridge, device_token: str):
             self.end_headers()
             self.wfile.write(data)
 
-        def _send_bytes(self, data: bytes, ctype: str) -> None:
+        def _send_bytes(self, data: bytes, ctype: str, cache: str = "private, max-age=86400") -> None:
             self.send_response(200)
             self.send_header("content-type", ctype)
             self.send_header("content-length", str(len(data)))
-            self.send_header("cache-control", "private, max-age=86400")
+            self.send_header("cache-control", cache)
             self.end_headers()
             self.wfile.write(data)
 
@@ -118,7 +120,7 @@ def make_handler(bridge: Bridge, device_token: str):
                 if m == method and match:
                     try:
                         result = getattr(self, "r_" + name)(q, *match.groups())
-                        if isinstance(result, tuple):  # (bytes, content type)
+                        if isinstance(result, tuple):  # (bytes, content type[, cache-control])
                             self._send_bytes(*result)
                         else:
                             self._send(200, result)
@@ -154,6 +156,16 @@ def make_handler(bridge: Bridge, device_token: str):
 
         def r_image(self, q, image_id):
             return bridge.images.get(image_id, _int(q, "w", 1000, 64, 4000))
+
+        def r_browser(self, q, short):
+            return bridge.browser_tabs(short)
+
+        def r_browser_snapshot(self, q, short):
+            tab = q.get("tab", [""])[0]
+            if not tab:
+                raise BridgeError(400, "send `tab`")
+            data, ctype = bridge.browser_snapshot(short, tab, _int(q, "w", 1000, 64, 4000))
+            return data, ctype, "no-store"  # a page changes; every fetch is a new look
 
         def r_projects(self, q):
             return bridge.projects()

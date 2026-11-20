@@ -32,6 +32,10 @@ class T3Error(Exception):
 class T3SocketError(T3Error):
     """The WebSocket closed or broke; safe to reconnect."""
 
+    def __init__(self, message: str, close_code: int | None = None):
+        super().__init__(message)
+        self.close_code = close_code  # from the server's close frame, if it sent one
+
 
 class T3RpcError(T3Error):
     def __init__(self, method: str, exit_value: Any):
@@ -302,10 +306,40 @@ class T3Client:
             }
         )
 
+    def preview_tabs(self, thread_id: str) -> list[dict]:
+        """The thread's preview browser tabs (PreviewSessionSnapshot objects)."""
+        return self.rpc("preview.list", {"threadId": thread_id}).get("sessions") or []
+
+    def preview_frame(self, thread_id: str, tab_id: str, max_width: int,
+                      max_height: int, quality: int = 85) -> bytes:
+        """One JPEG of a server-side preview tab, as T3's stream shows it to viewers.
+
+        The stream is opened read-only (`interactive=false`), which needs only
+        orchestration:read and never takes control from the agent or another viewer.
+        """
+        ticket = self._http("POST", "/api/auth/websocket-ticket/media")["ticket"]
+        qs = urllib.parse.urlencode({
+            "threadId": thread_id, "tabId": tab_id, "interactive": "false",
+            "maxWidth": max_width, "maxHeight": max_height, "quality": quality, "wsTicket": ticket,
+        })
+        ws = _WebSocket.connect(f"{self.base_url}/api/preview-stream/ws?{qs}", min(self.timeout, 15.0))
+        try:
+            while True:
+                opcode, data = ws.recv_message()
+                if opcode == 0x2:
+                    return data
+        finally:
+            ws.close()
+
     def pending_requests(self, thread_id: str) -> list[dict]:
         """Pending approvals and questions, joined the way the web app does
         (client-runtime derivePendingThreadRequests)."""
         return pending_requests_from(self.thread_snapshot(thread_id)["projection"])
+
+
+# Close codes from T3's preview stream.
+PREVIEW_TAB_GONE = 4404
+PREVIEW_HOST_SETUP = 4503
 
 
 def pending_requests_from(proj: dict) -> list[dict]:
@@ -404,7 +438,12 @@ class _WebSocket:
         self._send_frame(0x1, text.encode())
 
     def recv_text(self) -> str:
+        return self.recv_message()[1].decode()
+
+    def recv_message(self) -> tuple[int, bytes]:
+        """The next text (1) or binary (2) message, as (opcode, payload)."""
         parts: list[bytes] = []
+        first_opcode = 0
         while True:
             b1, b2 = self._read_exact(2)
             fin, opcode = b1 & 0x80, b1 & 0x0F
@@ -423,10 +462,14 @@ class _WebSocket:
             if opcode == 0xA:
                 continue
             if opcode == 0x8:
-                raise T3SocketError(f"WebSocket closed by server: {data[2:].decode(errors='replace')}")
+                code = struct.unpack(">H", data[:2])[0] if len(data) >= 2 else None
+                raise T3SocketError(f"WebSocket closed by server: {data[2:].decode(errors='replace')}",
+                                    close_code=code)
+            if opcode:
+                first_opcode = opcode  # continuation frames carry opcode 0
             parts.append(data)
             if fin:
-                return b"".join(parts).decode()
+                return first_opcode, b"".join(parts)
 
     def close(self) -> None:
         try:

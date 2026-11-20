@@ -901,6 +901,71 @@ class ImageTests(unittest.TestCase):
         self.assertTrue(data.startswith(b"\x89PNG"))
 
 
+class BrowserTests(unittest.TestCase):
+    JPEG = b"\xff\xd8fake"
+
+    def setUp(self):
+        self.t3 = FakeT3()
+        self.t3.threads["t1"] = thread("t1", itemCount=0)
+        self.t3.tabs = [
+            {"tabId": "tab_1_e", "runtime": "server",
+             "navStatus": {"_tag": "Success", "url": "https://a.test/", "title": "A page"}},
+            {"tabId": "tab_2", "navStatus": {"_tag": "Idle"}},  # desktop app window
+        ]
+        self.frames = []
+        self.t3.preview_tabs = lambda tid: self.t3.tabs if tid == "t1" else []
+
+        def frame(tid, tab, max_width, max_height):
+            self.frames.append((tid, tab, max_width, max_height))
+            if getattr(self, "close_code", None):
+                from t3bridge.t3client import T3SocketError
+                raise T3SocketError("closed", close_code=self.close_code)
+            return self.JPEG
+        self.t3.preview_frame = frame
+        self.b = Bridge(self.t3, None)
+        self.b.images.converter = None
+        self.b.refresh()
+        self.sid = render.short_id("t1")
+
+    def tearDown(self):
+        self.b.close()
+
+    def test_lists_tabs(self):
+        tabs = self.b.browser_tabs(self.sid)["tabs"]
+        self.assertEqual(tabs[0], {"id": "tab_1_e", "title": "A page", "url": "https://a.test/",
+                                   "status": "ok", "viewable": True})
+        self.assertEqual((tabs[1]["title"], tabs[1]["viewable"]), ("Blank tab", False))
+
+    def test_snapshot(self):
+        self.assertEqual(self.b.browser_snapshot(self.sid, "tab_1_e", 1448), (self.JPEG, "image/jpeg"))
+        self.assertEqual(self.frames, [("t1", "tab_1_e", 1448, 1448 * 4)])
+
+    def test_snapshot_errors(self):
+        for tab, status in (("tab_2", 409), ("tab_gone", 404)):
+            with self.assertRaises(BridgeError) as cm:
+                self.b.browser_snapshot(self.sid, tab, 800)
+            self.assertEqual(cm.exception.status, status)
+        for code, status in ((4404, 404), (4503, 503), (1011, 502)):
+            self.close_code = code
+            with self.assertRaises(BridgeError) as cm:
+                self.b.browser_snapshot(self.sid, "tab_1_e", 800)
+            self.assertEqual(cm.exception.status, status)
+
+    def test_http_snapshot_is_not_cached(self):
+        httpd = serve(self.b, "127.0.0.1", 0, "")
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            base = f"http://127.0.0.1:{httpd.server_address[1]}/v1/threads/{self.sid}/browser"
+            with urllib.request.urlopen(base + "/snapshot?tab=tab_1_e&w=600", timeout=5) as r:
+                self.assertEqual((r.read(), r.headers["cache-control"]), (self.JPEG, "no-store"))
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                urllib.request.urlopen(base + "/snapshot", timeout=5)
+            self.assertEqual(cm.exception.code, 400)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+
 class HttpTests(unittest.TestCase):
     def setUp(self):
         self.t3 = FakeT3()

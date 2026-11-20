@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import render
 from .images import Images
-from .t3client import T3Error, pending_requests_from
+from .t3client import PREVIEW_HOST_SETUP, PREVIEW_TAB_GONE, T3Error, T3SocketError, pending_requests_from
 
 log = logging.getLogger("t3bridge")
 
@@ -1158,6 +1158,54 @@ class Bridge:
             return self.thread_view(short, progress=progress)
 
         return self._once(client_msg_id, act)
+
+
+    # ---- preview browser (view only) ----------------------------------------
+
+    def browser_tabs(self, short: str) -> dict:
+        """The thread's preview browser tabs. Only tabs running on the T3 server
+        (`runtime: "server"`, which is where agents' tabs run) can be shown; a tab open
+        in the desktop app's own window lives there and nowhere else."""
+        self.last_device_at = time.monotonic()
+        t = self._thread(short)
+        try:
+            sessions = self.client.preview_tabs(t["id"])
+        except T3Error as e:
+            raise BridgeError(502, f"T3 wouldn't list the browser tabs: {e}") from None
+        tabs = []
+        for s in sessions:
+            nav = s.get("navStatus") or {}
+            url = nav.get("url") or ""
+            tabs.append({
+                "id": s.get("tabId"),
+                "title": nav.get("title") or url or "Blank tab",
+                "url": url,
+                "status": {"Loading": "loading", "LoadFailed": "failed"}.get(nav.get("_tag"), "ok"),
+                "viewable": s.get("runtime") == "server",
+            })
+        return {"tabs": tabs}
+
+    def browser_snapshot(self, short: str, tab_id: str, width: int) -> tuple[bytes, str]:
+        """What one tab shows right now, as an image at most `width` pixels wide."""
+        self.last_device_at = time.monotonic()
+        t = self._thread(short)
+        tab = next((s for s in self.client.preview_tabs(t["id"]) if s.get("tabId") == tab_id), None)
+        if tab is None:
+            raise BridgeError(404, "That browser tab is closed.")
+        if tab.get("runtime") != "server":
+            raise BridgeError(409, "That tab is open in the desktop app's window, which T3 can't share.")
+        try:
+            jpeg = self.client.preview_frame(t["id"], tab_id, max_width=width, max_height=width * 4)
+        except T3SocketError as e:
+            if e.close_code == PREVIEW_TAB_GONE:
+                raise BridgeError(404, "That browser tab is closed.") from None
+            if e.close_code == PREVIEW_HOST_SETUP:
+                raise BridgeError(503, "T3's browser can't start on its machine; open the tab in "
+                                       "the desktop app to see what it needs.") from None
+            raise BridgeError(502, f"T3's browser stream failed: {e}") from None
+        except (T3Error, OSError) as e:
+            raise BridgeError(502, f"T3's browser stream failed: {e}") from None
+        return self.images.page_snapshot(jpeg, width)
 
 
 def _model_id(instance: str, slug: str) -> str:

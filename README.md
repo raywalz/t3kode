@@ -37,6 +37,9 @@ Status: experimental, but in daily use on a Kobo Clara BW.
 - **Model picker:** a thread's Model button switches the model its next turn uses, and
   a new thread can start on any model. Your T3 favorites come first, then More models…
   for the rest (minus the ones you've hidden in T3).
+- **Browser:** a thread's Browser button shows what its preview browser tabs show right
+  now, as a grayscale snapshot; Refresh takes a new one. View only: nothing is clicked,
+  and the agent keeps control. Tabs open in the desktop app's own window can't be shown.
 - **E-ink friendly updates:** the screen redraws only when what it shows changes, without
   a full-screen flash. Optionally, follow a turn's steps as they happen.
 - **Reconnects** cleanly when the device wakes up, and a retried tap is never sent twice.

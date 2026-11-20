@@ -819,11 +819,121 @@ function T3:threadButtons(view)
             callback = function() self:changeModel(view) end,
         },
         {
+            text = _("Browser"),
+            callback = function() self:showBrowser(view) end,
+        },
+        {
             text = _("Refresh"),
             callback = function() self:reloadThread(view.id) end,
         },
     })
     return rows
+end
+
+-- ---------------------------------------------------------------------------
+-- preview browser (view only)
+
+--- The thread's preview browser: straight to the tab if there's one, else a list.
+function T3:showBrowser(view)
+    local ok, body = withBusy(_("Loading browser tabs…"), function() return self.api:browserTabs(view.id) end)
+    if not ok then
+        notify(body)
+        return
+    end
+    local tabs = type(body.tabs) == "table" and body.tabs or {}
+    if #tabs == 0 then
+        notify(_("This thread has no browser tabs open."))
+        return
+    end
+    if #tabs == 1 then return self:showBrowserTab(view, tabs[1]) end
+    local dialog
+    local rows = {}
+    for _i, tab in ipairs(tabs) do
+        local label = str(tab.title) or _("Blank tab")
+        if tab.viewable == false then label = label .. " " .. _("(desktop app)") end
+        table.insert(rows, {{
+            text = label,
+            align = "left",
+            callback = function()
+                UIManager:close(dialog)
+                self:showBrowserTab(view, tab)
+            end,
+        }})
+    end
+    table.insert(rows, {{ text = _("Cancel"), callback = function() UIManager:close(dialog) end }})
+    dialog = ButtonDialog:new{ title = _("Browser tabs"), buttons = rows }
+    UIManager:show(dialog)
+end
+
+--- A snapshot of one tab, full screen, with Refresh to take a new one.
+function T3:showBrowserTab(view, tab, old_viewer)
+    if tab.viewable == false then
+        notify(_("This tab is open in the desktop app's own window, which T3 can't share."))
+        return
+    end
+    -- A new name each time: KOReader caches decoded images by file name.
+    self.snapshot_n = (self.snapshot_n or 0) + 1
+    local file = imageDir() .. "/browser-" .. os.time() .. "-" .. self.snapshot_n .. ".png"
+    local ok, err = withBusy(_("Taking a snapshot…"), function()
+        -- Sized for the long side, so the page stays sharp when rotated.
+        local width = math.max(Device.screen:getWidth(), Device.screen:getHeight())
+        return self.api:browserSnapshot(view.id, str(tab.id), width, file)
+    end)
+    if not ok then
+        notify(err)
+        return
+    end
+    local viewer
+    viewer = ImageViewer:new{
+        file = file,
+        image_disposable = true,
+        fullscreen = true,
+        with_title_bar = true,
+        title_text = str(tab.title) or _("Browser"),
+        caption = str(tab.url),
+        caption_visible = false,
+        buttons_visible = true,
+        rotated = old_viewer and old_viewer.rotated or nil,
+    }
+    -- ImageViewer's own buttons are Scale / Rotate / Close; put Refresh first.
+    local ButtonTable = require("ui/widget/buttontable")
+    viewer.button_table = ButtonTable:new{
+        width = viewer.width - 2 * viewer.button_padding,
+        zero_sep = true,
+        show_parent = viewer,
+        buttons = {{
+            { text = _("Refresh"), callback = function() self:showBrowserTab(view, tab, viewer) end },
+            { id = "scale", text = _("Scale"), callback = function()
+                viewer.scale_factor = viewer._scale_to_fit and 1 or 0
+                viewer._scale_to_fit = not viewer._scale_to_fit
+                viewer._center_x_ratio = 0.5
+                viewer._center_y_ratio = 0.5
+                viewer:update()
+            end },
+            { id = "rotate", text = _("Rotate"), callback = function()
+                viewer.rotated = not viewer.rotated
+                viewer:update()
+            end },
+            { text = _("Close"), callback = function() viewer:onClose() end },
+        }},
+    }
+    viewer.button_container[1] = viewer.button_table
+    viewer:update()
+    local onCloseWidget = viewer.onCloseWidget
+    viewer.onCloseWidget = function(w)
+        if onCloseWidget then onCloseWidget(w) end
+        os.remove(file) -- already decoded; nothing reads it again
+        if self.browser_viewer == w then -- not when Refresh replaced it
+            self.browser_viewer = nil
+            self:endTyping(false)
+        end
+    end
+    -- Hold the thread's background redraws while the snapshot is open, as the reply box does.
+    self.typing = true
+    self.browser_viewer = viewer
+    -- Show the new snapshot before closing the old one, so nothing flashes through.
+    UIManager:show(viewer)
+    if old_viewer then UIManager:close(old_viewer) end
 end
 
 --- Show a thread view. `opts.update`: redraw an already open thread quietly (no

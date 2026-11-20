@@ -115,10 +115,16 @@ class Images:
                 self.cache.popitem(last=False)
         return result
 
-    def _for_eink(self, data: bytes, ctype: str, width: int) -> tuple[bytes, str]:
+    def page_snapshot(self, jpeg: bytes, width: int) -> tuple[bytes, str]:
+        """A browser frame for e-ink: grayscale PNG, since a web page is mostly text."""
+        return self._for_eink(jpeg, "image/jpeg", width, photo=False)
+
+    def _for_eink(self, data: bytes, ctype: str, width: int,
+                  photo: bool | None = None) -> tuple[bytes, str]:
         if not self.converter:
             return data, ctype
-        photo = "jpeg" in ctype
+        if photo is None:
+            photo = "jpeg" in ctype
         out_format = "jpg:-" if photo else "png:-"
         cmd = [self.converter, "-", "-auto-orient", "-resize", f"{width}x{width * 4}>",
                "-colorspace", "Gray", "-strip"]

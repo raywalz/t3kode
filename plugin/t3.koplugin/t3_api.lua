@@ -127,8 +127,17 @@ function Api:download(path, params, filepath)
     local code, headers = socket.skip(1, http.request(request))
     socketutil:reset_timeout()
     if code ~= 200 then
+        -- The bridge explains failures in a JSON body, which landed in the file.
+        local msg = "HTTP " .. tostring(code)
+        local efh = io.open(tmp, "rb")
+        if efh then
+            local ok, decoded = pcall(JSON.decode, efh:read(4096) or "")
+            efh:close()
+            if ok and type(decoded) == "table" and type(decoded.error) == "string" then msg = decoded.error end
+        end
+        if type(code) ~= "number" then msg = "Can't reach the bridge (" .. tostring(code) .. ")." end
         os.remove(tmp)
-        return false, "HTTP " .. tostring(code)
+        return false, msg
     end
     os.rename(tmp, filepath)
     return true, type(headers) == "table" and headers["content-type"] or nil
@@ -198,6 +207,16 @@ function Api:setModel(id, model, progress)
     return self:requestWithRetry("POST", "/v1/threads/" .. id .. "/model", nil, {
         model = model, client_msg_id = Api.newMessageId(), progress = progress or nil,
     })
+end
+
+--- The thread's preview browser tabs: { tabs = { {id, title, url, status, viewable}, … } }.
+function Api:browserTabs(id)
+    return self:request("GET", "/v1/threads/" .. id .. "/browser")
+end
+
+--- Save what a browser tab shows now to `filepath`. Returns ok, error_or_content_type.
+function Api:browserSnapshot(id, tab_id, width, filepath)
+    return self:download("/v1/threads/" .. id .. "/browser/snapshot", { tab = tab_id, w = width }, filepath)
 end
 
 return Api

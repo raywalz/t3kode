@@ -215,6 +215,19 @@ A thread only asks for approvals if its `runtimeMode` calls for them. Even then,
 the agent ran read-only commands such as `echo` without asking. A file write
 outside the workspace did ask (with `reason: "Path is outside allowed working directories"`).
 
+### Preview browser
+
+- `preview.list` `{"threadId"}` → `{"sessions": [PreviewSessionSnapshot], …}`. Needs only
+  `orchestration:read`. Each session has `tabId`, `navStatus` (`_tag` `Idle`, `Loading`,
+  `Success` or `LoadFailed`, with `url` and `title`), and `runtime`: `"server"` for tabs in
+  T3's own headless Chromium (agents' tabs), absent for tabs in the desktop app's window.
+- Only server tabs can be watched: `GET /api/preview-stream/ws?threadId&tabId&interactive=false&maxWidth&maxHeight&quality&wsTicket=<media ticket>`,
+  with the ticket from `POST /api/auth/websocket-ticket/media`. The server sends a `control`
+  and a `viewport` JSON message, then binary JPEG frames, each waiting for the viewer's
+  `{"type": "ack"}` before the next. Read-only viewing needs only `orchestration:read`;
+  input needs `preview:operate`. Close code 4404: tab gone; 4503: the browser can't start
+  on the host (`apps/server/src/preview/ServerBrowserStream.ts`). The first frame arrives at once.
+
 ## Change notifications (not used yet)
 
 `orchestration.subscribeShell` (`{afterSequence?}`) and
