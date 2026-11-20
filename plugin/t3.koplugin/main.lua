@@ -956,6 +956,26 @@ local function composeHtml(view, have, anchor, page_break_you, seam)
     elseif state == "failed" then
         table.insert(parts, '<div class="status">' .. esc(_("The last run failed.")) .. "</div>")
     end
+    -- The agent's task list, like the app's "Tasks 3/7" banner: done steps ticked and
+    -- struck through (by CSS: MuPDF ignores <s>), the running one in bold.
+    local tasks = type(view.tasks) == "table" and view.tasks or nil
+    if tasks and type(tasks.steps) == "table" and #tasks.steps > 0 then
+        local rows = {}
+        for _i, s in ipairs(tasks.steps) do
+            local text = esc(str(s.text) or "")
+            local status = str(s.status)
+            if status == "completed" then
+                table.insert(rows, '<p class="done">✓ ' .. text .. "</p>")
+            elseif status == "running" then
+                table.insert(rows, "<p>▸ <b>" .. text .. "</b></p>")
+            else
+                table.insert(rows, "<p>• " .. text .. "</p>")
+            end
+        end
+        local count = string.format("%s/%s", tostring(tasks.done or 0), tostring(tasks.total or #tasks.steps))
+        table.insert(parts, '<div class="prs tasks"><div class="pending-title">' .. esc(T(_("Tasks %1"), count))
+            .. "</div>" .. table.concat(rows) .. "</div>")
+    end
     -- Linked PRs, as T3 last synced them: "PR #12 open · checks pass · needs review".
     -- (T3 checks open PRs every few minutes, so there's no "as of" to show.)
     local prs = {}

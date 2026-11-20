@@ -167,6 +167,12 @@ uses it. Returns the new thread view. Choosing the current model changes nothing
   checks open ones every few minutes): `{number, repo, url, title, open, status}`, where
   `status` sums one up like the app's PR row: `open · checks pass · needs review ·
   conflicts`, `draft`, `merged`, `closed`, or `not synced` when T3 hasn't read it yet.
+- `tasks`: the agent's task list (its to-do tool or plan updates), like the
+  app's "Tasks 3/7" banner, or null: `{done, total, live, steps: [{text, status}]}` with
+  `status` `pending`, `running` or `completed`. It's the running turn's list (`live`), else
+  the latest one while steps are left undone. Step changes count as a change mid-turn.
+- Your message's citations (text you quoted from a reply, with a comment) show as the
+  quote in a block quote, then the comment.
 - A subagent thread's view has `parent: {id, title}`; top-level threads have `parent: null`.
 - `images`: ids of the images in the shown entries (see `/v1/images`).
 - Very long threads, whose full transcript T3 refuses, show their most recent part. A `tool` entry is one line covering

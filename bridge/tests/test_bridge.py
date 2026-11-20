@@ -699,6 +699,38 @@ class BridgeTests(unittest.TestCase):
                                      hasActionableProposedPlan=True)
         self.b.refresh()
 
+    def test_task_list(self):
+        steps = lambda *st: [{"id": f"todo-{i}", "text": f"Step {i}", "status": x} for i, x in enumerate(st)]
+        self.t3.items["t2"] = [
+            item(1, "user_message", runId="r1", text="Old", createdBy="user"),
+            item(2, "todo_list", runId="r1", planId="a", steps=steps("completed", "completed")),
+            item(3, "user_message", runId="r2", text="Go", createdBy="user"),
+            item(4, "todo_list", runId="r2", planId="b", steps=steps("completed", "running", "pending")),
+        ]
+        self.t3.threads["t2"] = dict(self.t3.threads["t2"], itemCount=4, activeRunId="r2")
+        self.b.refresh()
+        short = render.short_id("t2")
+        v = self.b.thread_view(short)
+        self.assertEqual(v["tasks"], {"done": 1, "total": 3, "live": True, "steps": [
+            {"text": "Step 0", "status": "completed"}, {"text": "Step 1", "status": "running"},
+            {"text": "Step 2", "status": "pending"}]})
+        # A step finishing changes what the device draws, even mid-turn without progress.
+        self.t3.items["t2"][-1] = item(4, "todo_list", runId="r2", planId="b",
+                                       steps=steps("completed", "completed", "running"))
+        self.t3.threads["t2"] = dict(self.t3.threads["t2"], updatedAt="2026-01-05T00:00:00Z")
+        self.b.refresh()
+        self.assertNotEqual(self.b.thread_view(short)["v"], v["v"])
+        # The turn ended with a step left: still shown. All done: gone.
+        self.t3.threads["t2"] = dict(self.t3.threads["t2"], status="completed", activeRunId=None,
+                                     updatedAt="2026-01-06T00:00:00Z")
+        self.b.refresh()
+        self.assertEqual(self.b.thread_view(short)["tasks"]["live"], False)
+        self.t3.items["t2"][-1] = item(4, "todo_list", runId="r2", planId="b",
+                                       steps=steps("completed", "completed", "completed"))
+        self.t3.threads["t2"] = dict(self.t3.threads["t2"], updatedAt="2026-01-07T00:00:00Z")
+        self.b.refresh()
+        self.assertIsNone(self.b.thread_view(short)["tasks"])
+
     def test_actionable_plan_offers_implement(self):
         self._with_plan()
         v = self.b.thread_view(self.s1)

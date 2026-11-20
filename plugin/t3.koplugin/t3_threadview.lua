@@ -49,6 +49,7 @@ hr { border: 0; border-top: 1px solid #888; margin: 0.5em 0; }
 .files ul { margin: 0.2em 0 0 0; padding-left: 1.2em; }
 .prs { border: 1px solid #888; padding: 0.3em 0.5em; margin-top: 0.6em; font-size: 0.9em; }
 .prs p { margin: 0 0 0.2em 0; }
+.tasks .done { color: #666; text-decoration: line-through; }
 .more { text-align: center; margin-bottom: 0.9em; }
 .more a { display: block; border: 2px solid black; padding: 0.7em 0.5em; font-weight: bold; }
 img { max-width: 100%; }

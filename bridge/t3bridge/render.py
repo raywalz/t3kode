@@ -71,6 +71,24 @@ def pull_requests(thread: dict) -> list[dict]:
     return out
 
 
+def todo_list(items: list[dict], live_run: str | None) -> dict | None:
+    """The agent's task list (its to-do tool or plan updates), as the app's
+    "Tasks 3/7" banner picks it: the running turn's list, else the latest one. A finished
+    turn's list shows only while steps are left undone."""
+    lists = [it for it in items if it.get("type") == "todo_list" and it.get("steps")]
+    if not lists:
+        return None
+    todo = next((it for it in reversed(lists) if live_run and it.get("runId") == live_run), lists[-1])
+    steps = [{"text": str(s.get("text") or "").strip(), "status": s.get("status") or "pending"}
+             for s in todo["steps"] if isinstance(s, dict)]
+    steps = [s for s in steps if s["text"]]
+    done = sum(s["status"] == "completed" for s in steps)
+    live = bool(live_run) and todo.get("runId") == live_run
+    if not steps or (not live and done == len(steps)):
+        return None
+    return {"done": done, "total": len(steps), "live": live, "steps": steps}
+
+
 def is_unread(thread: dict) -> bool:
     finished = thread.get("latestRunCompletedAt")
     visited = thread.get("lastVisitedAt")

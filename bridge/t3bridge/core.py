@@ -98,6 +98,7 @@ def _content_version(body: dict, progress: bool) -> str:
     shown = {k: body[k] for k in ("title", "state", "model", "mode", "more_before", "pending",
                                   "replies", "typed")}
     shown["prs"] = [(p["number"], p["status"], p["title"]) for p in body["prs"]]
+    shown["tasks"] = body["tasks"]
     if progress or body["state"] != "working":
         shown["entries"] = [(e["role"], e["text"], e.get("expanded")) for e in body["entries"]]
     raw = json.dumps(shown, sort_keys=True, ensure_ascii=False).encode()
@@ -564,6 +565,7 @@ class Bridge:
             "mode": "plan" if t.get("interactionMode") == "plan" else "default",
             "plan_mode": self._plan_mode_ok(t.get("modelSelection")),
             "prs": render.pull_requests(t),
+            "tasks": render.todo_list(items, live_run),
             # For the thread menu (hold the title): the same fields as a list row.
             "settled": _is_settled(t), "pinned": bool(t.get("pinnedAt")),
             "snoozed_until": t["snoozedUntil"] if _snoozed(t) else None,
