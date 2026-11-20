@@ -595,21 +595,29 @@ end
 
 local SHORT_LABELS = { ["c:summarize"] = _("Summarize"), ["c:continue"] = _("Continue"), ["c:stop"] = _("Stop") }
 
---- The Reply button: the suggested replies, then Type… to write your own.
---- With no suggestions it goes straight to typing.
-function T3:showReplyDialog(view, suggestions, can_type)
-    if #suggestions == 0 then return self:typeReply(view) end
+--- The Reply button: Continue / Summarize in one row at the top, then the suggested
+--- replies, then Type… to write your own. With none of those it goes straight to typing.
+function T3:showReplyDialog(view, quick, suggestions, can_type)
+    if #quick == 0 and #suggestions == 0 then return self:typeReply(view) end
     local dialog
-    local rows = {}
-    for _i, b in ipairs(suggestions) do
-        table.insert(rows, { {
+    local function closing(b)
+        return {
             text = b.text,
             enabled = b.enabled,
             callback = function()
                 UIManager:close(dialog)
                 b.callback()
             end,
-        } })
+        }
+    end
+    local rows = {}
+    if #quick > 0 then
+        local row = {}
+        for _i, b in ipairs(quick) do table.insert(row, closing(b)) end
+        table.insert(rows, row)
+    end
+    for _i, b in ipairs(suggestions) do
+        table.insert(rows, { closing(b) })
     end
     table.insert(rows, { {
         text = _("Type…"),
@@ -628,6 +636,7 @@ function T3:threadButtons(view)
     local shortcuts = {}
     local answers = {}
     local suggestions = {} -- offered by the Reply button
+    local quick = {} -- Continue / Summarize, at the top of the Reply dialog
     for _i, r in ipairs(view.replies or {}) do
         local id = str(r.id)
         local button = {
@@ -640,8 +649,10 @@ function T3:threadButtons(view)
         }
         if r.kind == "suggestion" then
             table.insert(suggestions, button)
+        elseif r.kind == "shortcut" and id ~= "c:stop" then
+            table.insert(quick, button)
         elseif r.kind == "shortcut" then
-            table.insert(shortcuts, button)
+            table.insert(shortcuts, button) -- Stop stays on the thread screen
         elseif r.kind == "secret" then
             table.insert(answers, 1, button) -- Enter secret, then Decline, in one row
         elseif r.kind == "answer" and #(str(r.label) or "") <= 18 then
@@ -657,8 +668,8 @@ function T3:threadButtons(view)
     table.insert(rows, {
         {
             text = _("Reply"),
-            enabled = typed ~= "none" or #suggestions > 0,
-            callback = function() self:showReplyDialog(view, suggestions, typed ~= "none") end,
+            enabled = typed ~= "none" or #suggestions > 0 or #quick > 0,
+            callback = function() self:showReplyDialog(view, quick, suggestions, typed ~= "none") end,
         },
         {
             text = _("Model"),
