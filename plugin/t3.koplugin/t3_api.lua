@@ -55,7 +55,8 @@ function Api.newMessageId()
 end
 
 --- Returns ok, body_or_error_message, http_status.
-function Api:request(method, path, params, body)
+--- `timeouts`: { connect, total } seconds, instead of the usual 10 and 30.
+function Api:request(method, path, params, body, timeouts)
     if not self:configured() then
         return false, "Set the bridge address first (Tools → More tools → T3 Code settings)."
     end
@@ -79,7 +80,7 @@ function Api:request(method, path, params, body)
     end
     -- Replies wait briefly on the bridge (it waits for T3 to react, and for suggestions),
     -- so allow a little longer than a plain read.
-    socketutil:set_timeout(10, 30)
+    socketutil:set_timeout(timeouts and timeouts[1] or 10, timeouts and timeouts[2] or 30)
     local code, _, status = socket.skip(1, http.request(request))
     socketutil:reset_timeout()
     if type(code) ~= "number" then
@@ -141,6 +142,11 @@ function Api:download(path, params, filepath)
     end
     os.rename(tmp, filepath)
     return true, type(headers) == "table" and headers["content-type"] or nil
+end
+
+--- Quick check that the bridge answers (short timeouts, for trying again and again).
+function Api:health()
+    return (self:request("GET", "/v1/health", nil, nil, { 4, 6 }))
 end
 
 function Api:threads(limit)

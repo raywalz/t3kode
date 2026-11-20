@@ -46,7 +46,9 @@ Status: experimental, but in daily use on a Kobo Clara BW.
   and the agent keeps control. Tabs open in the desktop app's own window can't be shown.
 - **E-ink friendly updates:** the screen redraws only when what it shows changes, without
   a full-screen flash. Optionally, follow a turn's steps as they happen.
-- **Reconnects** cleanly when the device wakes up, and a retried tap is never sent twice.
+- **Reconnects** when the device wakes up: KOReader turns Wi-Fi off for sleep, so with
+  T3 open the plugin turns it back on and refreshes, and any tap that needs the bridge
+  turns Wi-Fi on first. A retried tap is never sent twice.
 
 ## How it fits together
 
@@ -110,6 +112,10 @@ return {
 
 Then open **T3 Code**, the first item in the Tools tab. You can also bind it to a
 gesture: the action is "T3 Code threads".
+
+To update the plugin, copy the new files over it, then choose **Reload T3 plugin** (from
+the list's menu button, or hold an open thread's title). It loads the new code without
+restarting KOReader and reopens what you had open. Gesture action: "Reload T3 plugin".
 
 Your KOReader gestures keep working inside the plugin: edge swipes for brightness
 and warmth, multiswipes, corner taps, and swiping down from the top for KOReader's

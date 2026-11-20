@@ -14,6 +14,7 @@ local lfs = require("libs/libkoreader-lfs")
 local ConfirmBox = require("ui/widget/confirmbox")
 local DataStorage = require("datastorage")
 local Dispatcher = require("dispatcher")
+local Event = require("ui/event")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
 local LuaSettings = require("luasettings")
@@ -22,6 +23,7 @@ local NetworkMgr = require("ui/network/manager")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
+local socket = require("socket")
 local _ = require("gettext")
 local T = require("ffi/util").template
 
@@ -57,11 +59,15 @@ function T3:init()
     Dispatcher:registerAction("t3_open", {
         category = "none", event = "T3Open", title = _("T3 Code threads"), general = true,
     })
+    Dispatcher:registerAction("t3_reload", {
+        category = "none", event = "T3Reload", title = _("Reload T3 plugin"), general = true,
+    })
     self.ui.menu:registerToMainMenu(self)
 end
 
 function T3:makeApi()
     self.api = Api.new(self.settings:readSetting("bridge_url"), self.settings:readSetting("bridge_token"))
+    bridge_api = self.api
 end
 
 -- Put "T3 Code" first in the Tools tab of both the file browser and the reader.
@@ -213,8 +219,46 @@ local function notify(text, timeout)
     UIManager:show(InfoMessage:new{ text = text, timeout = timeout or 4 })
 end
 
+-- Staying connected. KOReader turns Wi-Fi off before the Kobo sleeps and, unless its
+-- "Restore Wi-Fi connection on resume" is on, leaves it off on waking. So a request
+-- turns Wi-Fi back on first, and waking up with T3 open reconnects (T3:onResume).
+
+local bridge_api -- the plugin's Api (set by T3:makeApi), to check the bridge answers
+
+local function offline()
+    return Device:hasWifiToggle() and not NetworkMgr:isConnected()
+end
+
+--- Blocking, like the requests themselves: turn Wi-Fi on and wait up to 30 s for an
+--- address, then up to 20 s for the bridge (over Tailscale, the tunnel takes a few
+--- seconds more). Returns true once connected.
+local function ensureConnected()
+    if not offline() then return true end
+    local msg = InfoMessage:new{ text = _("Wi-Fi is off. Reconnecting…"), dismissable = false }
+    UIManager:show(msg)
+    UIManager:forceRePaint()
+    if not NetworkMgr.pending_connection then
+        local ok, err = pcall(NetworkMgr.enableWifi, NetworkMgr, nil, false)
+        if not ok then logger.warn("t3: enabling Wi-Fi failed", err) end
+    end
+    local deadline = os.time() + 30
+    while not NetworkMgr:isConnected() and os.time() < deadline do socket.sleep(0.25) end
+    local connected = NetworkMgr:isConnected()
+    if connected and bridge_api then
+        deadline = os.time() + 20
+        while not bridge_api:health() and os.time() < deadline do socket.sleep(1) end
+    end
+    UIManager:close(msg)
+    logger.info("t3: reconnected:", connected)
+    return connected
+end
+
 --- Run fn while showing a short "working" message, so a slow call doesn't look like a freeze.
+--- Every call to the bridge goes through here, so this is also where Wi-Fi comes back on.
 local function withBusy(text, fn)
+    if not ensureConnected() then
+        return false, _("Couldn't connect to Wi-Fi. Check it's on and in range, then try again.")
+    end
     local msg = InfoMessage:new{ text = text, dismissable = false }
     UIManager:show(msg)
     UIManager:forceRePaint()
@@ -266,8 +310,31 @@ end
 -- thread list
 
 function T3:onT3Open()
-    NetworkMgr:runWhenConnected(function() self:showList() end)
+    self:showList() -- turns Wi-Fi on if it's off (withBusy)
     return true
+end
+
+--- Woken up with T3 open: if KOReader isn't bringing Wi-Fi back itself, turn it on.
+--- The open thread or list then refreshes (onNetworkConnected).
+function T3:onResume()
+    if not (self.viewer or self.list) then return end
+    -- A moment first, for KOReader's own restore (its setting) to start.
+    UIManager:scheduleIn(2, function()
+        if not (self.viewer or self.list) or not offline() then return end
+        if NetworkMgr:isWifiOn() or NetworkMgr.pending_connection then return end
+        logger.info("t3: woke with Wi-Fi off, reconnecting")
+        NetworkMgr:turnOnWifiAndWaitForConnection(function() end)
+    end)
+end
+
+--- Wi-Fi is back (from anywhere): check the open thread or list for changes now
+--- rather than at the next poll. A couple of seconds first, for Tailscale.
+function T3:onNetworkConnected()
+    local poll = self.viewer and self.thread_poll or (not self.viewer and self.list_poll)
+    if poll then
+        UIManager:unschedule(poll)
+        UIManager:scheduleIn(3, poll)
+    end
 end
 
 function T3:listItems(body, project_filter)
@@ -380,7 +447,8 @@ function T3:showList(project_id, title)
     end
     menu.onLeftButtonTap = function() self:showListActions() end
     Gestures.attach(menu)
-    self.list = { menu = menu, v = body.v, params = params, project_id = project_id, parent = self.list }
+    self.list = { menu = menu, v = body.v, params = params, project_id = project_id, title = title,
+        parent = self.list }
     UIManager:show(menu)
     self:scheduleListPoll()
 end
@@ -443,7 +511,7 @@ function T3:viewActions(view)
     self:threadActions(view, function()
         if not self.view or self.view.id ~= view.id then return end -- closed meanwhile
         if self.viewer then self.viewer:onClose() end
-    end)
+    end, { text = _("Reload T3 plugin"), callback = function() self:reloadPlugin() end })
 end
 
 --- The app's snooze choices. This evening only while it's more than an hour away.
@@ -518,7 +586,8 @@ end
 
 --- Hold on a thread in the list (or the title of an open one): the app's thread menu
 --- (pin, snooze, mark unread, settle, archive). `done(kind)`: what to show afterwards.
-function T3:threadActions(t, done)
+--- `extra`: one more button ({text, callback}), above Cancel.
+function T3:threadActions(t, done, extra)
     local settled = t.settled == true
     local pinned = t.pinned == true
     local snoozed = str(t.snoozed_until) ~= nil
@@ -581,6 +650,15 @@ function T3:threadActions(t, done)
             end,
         }})
     end
+    if extra then
+        table.insert(rows, {{
+            text = extra.text,
+            callback = function()
+                UIManager:close(dialog)
+                extra.callback()
+            end,
+        }})
+    end
     table.insert(rows, {{ text = _("Cancel"), callback = function() UIManager:close(dialog) end }})
     dialog = ButtonDialog:new{ title = str(t.title) or _("Thread"), buttons = rows }
     UIManager:show(dialog)
@@ -602,9 +680,81 @@ function T3:showListActions()
                 UIManager:close(dialog)
                 self:showSettings()
             end }},
+            {{ text = _("Reload T3 plugin"), callback = function()
+                UIManager:close(dialog)
+                self:reloadPlugin()
+            end }},
         },
     }
     UIManager:show(dialog)
+end
+
+-- ---------------------------------------------------------------------------
+-- reloading
+
+local MODULES = { "t3_api", "t3_gestures", "t3_threadview" }
+
+function T3:onT3Reload()
+    self:reloadPlugin()
+    return true
+end
+
+--- Load the plugin's code again (after new files were copied over) without restarting
+--- KOReader, then reopen the list and thread that were open. The new code replaces the
+--- methods on the plugin's class, so this instance and later ones (a new file browser
+--- or reader) both use it. If the new code doesn't load, the old code keeps running.
+function T3:reloadPlugin()
+    local lists = {} -- the open lists, the full one first (a project's list opens on top)
+    local list = self.list
+    while list do
+        table.insert(lists, 1, { project_id = list.project_id, title = list.title })
+        list = list.parent
+    end
+    local reopen_thread = self.view and self.view.id
+    local page = self.viewer and self.viewer:currentPage()
+
+    self:stopThreadPoll()
+    if self.list_poll then
+        UIManager:unschedule(self.list_poll)
+        self.list_poll = nil
+    end
+    -- UIManager:close doesn't run the widgets' close callbacks, so nothing reopens.
+    local viewer = self.viewer
+    self.viewer, self.view, self.thread_stack = nil, nil, {}
+    if viewer then UIManager:close(viewer) end
+    while self.list do
+        local menu = self.list.menu
+        self.list = self.list.parent
+        UIManager:close(menu)
+    end
+
+    local saved = {}
+    for _i, name in ipairs(MODULES) do
+        saved[name] = package.loaded[name]
+        package.loaded[name] = nil
+    end
+    local ok, new = pcall(dofile, self.path .. "/main.lua")
+    if ok and type(new) == "table" then
+        local class = getmetatable(self)
+        for k, v in pairs(new) do
+            if k ~= "__index" then class[k] = v end
+        end
+        self:makeApi() -- with the new Api module
+        logger.info("t3: plugin reloaded")
+    else
+        for name, mod in pairs(saved) do package.loaded[name] = mod end
+        logger.err("t3: reload failed", new)
+    end
+
+    UIManager:nextTick(function()
+        for _i, l in ipairs(lists) do self:showList(l.project_id, l.title) end
+        if reopen_thread then self:openThread(reopen_thread, page) end
+        if ok and type(new) == "table" then
+            notify(_("T3 plugin reloaded."), 2)
+        else
+            notify(T(_("Couldn't reload the T3 plugin; still running the old code.\n%1"), tostring(new)), 10)
+        end
+    end)
 end
 
 -- ---------------------------------------------------------------------------
