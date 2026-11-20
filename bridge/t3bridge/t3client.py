@@ -209,8 +209,11 @@ class T3Client:
         )
 
     def send_message(self, thread_id: str, text: str, queue: bool = False,
-                     command_id: str | None = None, message_id: str | None = None) -> dict:
-        """Send a user message, as the composer does. `queue` waits for the active run."""
+                     command_id: str | None = None, message_id: str | None = None,
+                     source_plan: dict | None = None) -> dict:
+        """Send a user message, as the composer does. `queue` waits for the active run.
+        `source_plan` ({threadId, planId}): this message implements that proposed plan,
+        which T3 then marks as implemented."""
         return self.dispatch(
             {
                 "type": "message.dispatch",
@@ -221,6 +224,7 @@ class T3Client:
                 "messageId": message_id or new_id(),
                 "text": text,
                 "attachments": [],
+                **({"sourcePlanRef": source_plan} if source_plan else {}),
                 **({} if queue else {"deliveryIntent": "auto"}),
                 "dispatchMode": {"type": "queue_after_active" if queue else "start_immediately"},
             }
@@ -230,6 +234,12 @@ class T3Client:
         """Switch the thread's model (and provider), as the app's model picker does."""
         return self.dispatch({"type": "thread.model-selection.set", "commandId": command_id or new_id(),
                               "threadId": thread_id, "modelSelection": model_selection})
+
+    def set_interaction_mode(self, thread_id: str, mode: str, command_id: str | None = None) -> dict:
+        """Plan mode ("plan") or not ("default") for the thread's next turns, as the
+        composer's Plan toggle does."""
+        return self.dispatch({"type": "thread.interaction-mode.set", "commandId": command_id or new_id(),
+                              "threadId": thread_id, "interactionMode": mode})
 
     def delete_thread(self, thread_id: str) -> dict:
         return self.dispatch({"type": "thread.delete", "threadId": thread_id})

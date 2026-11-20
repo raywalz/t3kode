@@ -76,13 +76,15 @@ def _wake_key(t: dict) -> tuple:
     model = t.get("modelSelection") or {}
     return (state, pending, t.get("title"), render.is_unread(t), t.get("settledOverride"),
             None if state == "working" else t.get("itemCount"),
-            model.get("instanceId"), model.get("model"))
+            model.get("instanceId"), model.get("model"),
+            t.get("interactionMode"), bool(t.get("hasActionableProposedPlan")))
 
 
 def _content_version(body: dict, progress: bool) -> str:
     """Fingerprint of what the device would draw. Without `progress`, a working thread's
     steps are left out, so new steps don't count as a change until the turn ends."""
-    shown = {k: body[k] for k in ("title", "state", "model", "more_before", "pending", "replies", "typed")}
+    shown = {k: body[k] for k in ("title", "state", "model", "mode", "more_before", "pending",
+                                  "replies", "typed")}
     if progress or body["state"] != "working":
         shown["entries"] = [(e["role"], e["text"], e.get("expanded")) for e in body["entries"]]
     raw = json.dumps(shown, sort_keys=True, ensure_ascii=False).encode()
@@ -427,6 +429,8 @@ class Bridge:
         body = {
             "id": short, "title": t.get("title") or "Untitled", "state": state,
             "model": self._model_label(t.get("modelSelection")),
+            "mode": "plan" if t.get("interactionMode") == "plan" else "default",
+            "plan_mode": self._plan_mode_ok(t.get("modelSelection")),
             "parent": ({"id": render.short_id(parent["id"]), "title": parent.get("title") or "Untitled"}
                        if parent and _is_subagent(t) else None),
             "cursor": cursor, "more_before": more_before, "entries": shown,
@@ -449,6 +453,37 @@ class Bridge:
                 return it
         return None
 
+    def _active_plan(self, t: dict) -> dict | None:
+        """The proposed plan waiting to be implemented (T3's "actionable" plan): the
+        thread's latest one, while T3 still marks it active."""
+        if not t.get("hasActionableProposedPlan"):
+            return None
+        items, _ = self._load(t)
+        return next((it for it in reversed(items) if it.get("type") == "proposed_plan"
+                     and not it.get("streaming") and it.get("planId")), None)
+
+    def _plan_mode_ok(self, sel: dict | None) -> bool:
+        """Whether the model's provider has a plan mode (T3 hides the toggle otherwise)."""
+        inst = (sel or {}).get("instanceId")
+        try:
+            providers = self._server_config().get("providers") or []
+        except Exception as e:
+            log.warning("server config failed: %s", e)
+            return False
+        p = next((p for p in providers if p.get("instanceId") == inst), None)
+        return p is not None and p.get("showInteractionModeToggle") is not False
+
+    def _set_mode(self, t: dict, mode: str | None, cmid: str | None) -> None:
+        """Switch plan mode before a message, as the app does when you send with the
+        Plan toggle changed. None leaves it as it is."""
+        if mode is None or (t.get("interactionMode") or "default") == mode:
+            return
+        if mode not in ("plan", "default"):
+            raise BridgeError(400, "mode is `plan` or `default`")
+        if mode == "plan" and not self._plan_mode_ok(t.get("modelSelection")):
+            raise BridgeError(400, "this model has no plan mode")
+        self.client.set_interaction_mode(t["id"], mode, command_id=_stable_id(cmid, "i"))
+
     def _replies(self, t: dict, state: str, cursor: int):
         """(pending description, buttons, what typed text does)."""
         if state == "needs_you":
@@ -464,6 +499,10 @@ class Bridge:
         if state == "working":
             buttons.append({"id": "c:stop", "label": "Stop", "kind": "shortcut"})
             return None, buttons, "message"
+        plan = self._active_plan(t)
+        if plan is not None:
+            buttons.append({"id": f"p:{render.short_id(plan['planId'])}", "label": "Implement plan",
+                            "kind": "plan"})
         sug = self.suggestions.get(t["id"])
         if sug and sug["cursor"] == cursor and sug["status"] == "ready":
             for i, text in enumerate(sug["items"]):
@@ -659,7 +698,8 @@ class Bridge:
 
     def reply(self, short: str, reply_id: str | None = None, text: str | None = None,
               client_msg_id: str | None = None, progress: bool = False,
-              expand: frozenset[str] = frozenset()) -> dict:
+              expand: frozenset[str] = frozenset(), mode: str | None = None) -> dict:
+        """`mode` ("plan" or "default"): for typed text, switch plan mode first."""
         self.last_device_at = time.monotonic()
         t = self._thread(short)
 
@@ -668,7 +708,7 @@ class Bridge:
             if reply_id:
                 sent = self._do_reply(t, reply_id, client_msg_id)
             elif text and text.strip():
-                sent = self._do_text(t, text.strip(), client_msg_id)
+                sent = self._do_text(t, text.strip(), client_msg_id, mode)
             else:
                 raise BridgeError(400, "send `reply` or `text`")
             if sent is not False:  # False: handled here (a tick, a first answer); T3 won't react
@@ -708,6 +748,17 @@ class Bridge:
                 raise BridgeError(409, "that suggestion is out of date")
             self.client.send_message(tid, sug["items"][int(idx)], command_id=_stable_id(cmid, "c"),
                                      message_id=_stable_id(cmid, "m"))
+            return
+        elif kind == "p":
+            plan = self._active_plan(t)
+            if plan is None or render.short_id(plan["planId"]) != rest:
+                raise BridgeError(409, "that plan was already implemented or replaced")
+            # As the app's Implement button: leave plan mode, send the plan, and link the
+            # turn to it so T3 marks it implemented.
+            self._set_mode(t, "default", cmid)
+            self.client.send_message(tid, render.PLAN_PROMPT + (plan.get("markdown") or "").strip(),
+                                     command_id=_stable_id(cmid, "c"), message_id=_stable_id(cmid, "m"),
+                                     source_plan={"threadId": tid, "planId": plan["planId"]})
             return
         elif kind == "x":
             sid, _, action = rest.partition(":")
@@ -756,7 +807,7 @@ class Bridge:
             return self._answer(t, match, q, label, cmid)
         raise BridgeError(400, "unknown reply")
 
-    def _do_text(self, t: dict, text: str, cmid: str | None) -> None:
+    def _do_text(self, t: dict, text: str, cmid: str | None, mode: str | None = None) -> None:
         state = render.thread_state(t)
         if state == "needs_you":
             pending = self._pending(t)
@@ -768,6 +819,7 @@ class Bridge:
                 q = next((q for q in questions if q["id"] not in answers), None)
                 if q is not None and capability == "live" and q.get("allowCustomAnswer", True) is not False:
                     return self._answer(t, p, q, text, cmid)
+        self._set_mode(t, mode, cmid)
         self.client.send_message(t["id"], text, command_id=_stable_id(cmid, "c"),
                                  message_id=_stable_id(cmid, "m"))
 
@@ -869,8 +921,9 @@ class Bridge:
         return {"ok": True, "settled": _is_settled(self.threads.get(t["id"], {}))}
 
     def start_thread(self, project: str, text: str, client_msg_id: str | None = None,
-                     model: str | None = None) -> dict:
-        """`model`: an id from /v1/models; None uses the thread default from T3's settings."""
+                     model: str | None = None, mode: str | None = None) -> dict:
+        """`model`: an id from /v1/models; None uses the thread default from T3's settings.
+        `mode`: "plan" starts the thread in plan mode."""
         self.last_device_at = time.monotonic()
         pid = self.by_short.get(project)
         shell = self.shell or {"projects": []}
@@ -883,11 +936,16 @@ class Bridge:
         def act():
             default, runtime, workspace = self.new_thread_settings(pid, p)
             chosen = self._resolve_model(model) if model else default
+            if mode not in (None, "default", "plan"):
+                raise BridgeError(400, "mode is `plan` or `default`")
+            if mode == "plan" and not self._plan_mode_ok(chosen):
+                raise BridgeError(400, "this model has no plan mode")
             title = " ".join(text.split())[:60]
             res = self.client.launch_thread(pid, title, text.strip(), chosen, runtime_mode=runtime,
                                             command_id=_stable_id(client_msg_id, "c"),
                                             message_id=_stable_id(client_msg_id, "m"),
-                                            generate_title=True, workspace=workspace)
+                                            generate_title=True, workspace=workspace,
+                                            interaction_mode=mode or "default")
             self.refresh()
             return self.thread_view(render.short_id(res["threadId"]))
 

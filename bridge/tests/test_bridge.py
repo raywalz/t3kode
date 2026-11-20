@@ -58,6 +58,10 @@ class FakeT3:
                              "providerModelPreferences": {"x": {"hiddenModels": ["secret"]}}},
                 "providers": self.providers}
 
+    def set_interaction_mode(self, tid, mode, **kw):
+        self.threads[tid] = dict(self.threads[tid], interactionMode=mode)
+        return self._record("set_interaction_mode", tid, mode, **kw)
+
     def set_model(self, tid, sel, **kw):
         self.threads[tid] = dict(self.threads[tid], modelSelection=sel)
         return self._record("set_model", tid, sel, **kw)
@@ -610,6 +614,64 @@ class BridgeTests(unittest.TestCase):
         self.b.start_thread(render.short_id("p1"), "Use M", client_msg_id="cm1",
                             model=render.short_id("model:y:m"))
         self.assertEqual(self.t3.calls[-1][1][3], {"instanceId": "y", "model": "m"})
+
+
+    def _with_plan(self):
+        self.t3.items["t1"].append(item(9, "proposed_plan", runId="r2", planId="plan-1",
+                                        markdown="# Add caching\n\n1. Do it", streaming=False))
+        self.t3.threads["t1"] = dict(self.t3.threads["t1"], itemCount=9, interactionMode="plan",
+                                     hasActionableProposedPlan=True)
+        self.b.refresh()
+
+    def test_actionable_plan_offers_implement(self):
+        self._with_plan()
+        v = self.b.thread_view(self.s1)
+        self.assertEqual((v["mode"], v["plan_mode"]), ("plan", True))
+        # The plan stays visible when its turn folds, as in the app.
+        self.assertTrue(any(e["text"].startswith("Add caching") for e in v["entries"]))
+        self.assertEqual(v["replies"][0], {"id": f"p:{render.short_id('plan-1')}",
+                                           "label": "Implement plan", "kind": "plan"})
+        self.b.reply(self.s1, reply_id=v["replies"][0]["id"], client_msg_id="ip1")
+        (n1, a1, _), (n2, a2, kw) = self.t3.calls[-2:]
+        self.assertEqual((n1, a1[1]), ("set_interaction_mode", "default"))
+        self.assertEqual(n2, "send_message")
+        self.assertEqual(a2[1], "PLEASE IMPLEMENT THIS PLAN:\n# Add caching\n\n1. Do it")
+        self.assertEqual(kw["source_plan"], {"threadId": "t1", "planId": "plan-1"})
+        # Shown short: the plan is right above it.
+        self.t3.items["t1"].append(item(10, "user_message", runId="r3", createdBy="user", text=a2[1]))
+        self.t3.threads["t1"] = dict(self.t3.threads["t1"], itemCount=10, updatedAt="2026-01-05T00:00:00Z")
+        self.b.refresh()
+        self.assertEqual(self.b.thread_view(self.s1)["entries"][-1]["text"], "Implement the plan.")
+        # Once T3 marks it implemented, the button goes and a stale tap is refused.
+        self.t3.threads["t1"] = dict(self.t3.threads["t1"], hasActionableProposedPlan=False, itemCount=11)
+        self.b.refresh()
+        self.assertFalse(any(r["kind"] == "plan" for r in self.b.thread_view(self.s1)["replies"]))
+        with self.assertRaises(BridgeError):
+            self.b.reply(self.s1, reply_id=f"p:{render.short_id('plan-1')}", client_msg_id="ip2")
+
+    def test_typed_reply_switches_plan_mode_first(self):
+        self.b.reply(self.s1, text="Plan the cache", mode="plan", client_msg_id="pm1")
+        names = [c[0] for c in self.t3.calls[-2:]]
+        self.assertEqual(names, ["set_interaction_mode", "send_message"])
+        self.assertEqual(self.b.thread_view(self.s1)["mode"], "plan")
+        # Same mode again: nothing extra is sent.
+        n = len(self.t3.calls)
+        self.b.reply(self.s1, text="More", mode="plan", client_msg_id="pm2")
+        self.assertEqual([c[0] for c in self.t3.calls[n:]], ["send_message"])
+
+    def test_plan_mode_follows_provider(self):
+        self.t3.providers = [dict(p, showInteractionModeToggle=False) for p in FakeT3.providers]
+        self.b._config = None
+        self.b.refresh()
+        self.assertFalse(self.b.thread_view(self.s1)["plan_mode"])
+        with self.assertRaises(BridgeError):
+            self.b.reply(self.s1, text="Plan it", mode="plan", client_msg_id="pp1")
+
+    def test_start_thread_in_plan_mode(self):
+        self.b.start_thread(render.short_id("p1"), "Plan a refactor", client_msg_id="sp1", mode="plan")
+        self.assertEqual(self.t3.calls[-1][2]["interaction_mode"], "plan")
+        self.b.start_thread(render.short_id("p1"), "Just do it", client_msg_id="sp2")
+        self.assertEqual(self.t3.calls[-1][2]["interaction_mode"], "default")
 
 
 class TokenTests(unittest.TestCase):

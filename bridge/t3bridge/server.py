@@ -40,6 +40,11 @@ def _flag(q: dict, key: str) -> bool:
     return q.get(key, ["0"])[0] in ("1", "true", "yes")
 
 
+def _mode(body: dict) -> str | None:
+    mode = body.get("mode")
+    return mode if isinstance(mode, str) and mode else None
+
+
 def make_handler(bridge: Bridge, device_token: str):
     routes = [
         ("GET", re.compile(r"^/v1/health$"), "health"),
@@ -180,7 +185,8 @@ def make_handler(bridge: Bridge, device_token: str):
             b = self._body()
             return bridge.reply(short, reply_id=b.get("reply"), text=b.get("text"),
                                 client_msg_id=b.get("client_msg_id"), progress=bool(b.get("progress")),
-                                expand=frozenset(x for x in b.get("expand") or [] if isinstance(x, str)))
+                                expand=frozenset(x for x in b.get("expand") or [] if isinstance(x, str)),
+                                mode=_mode(b))
 
         def r_secret(self, q, short):
             b = self._body()
@@ -200,7 +206,8 @@ def make_handler(bridge: Bridge, device_token: str):
             model = b.get("model")
             return bridge.start_thread(str(b.get("project", "")), str(b.get("text", "")),
                                        client_msg_id=b.get("client_msg_id"),
-                                       model=model if isinstance(model, str) and model else None)
+                                       model=model if isinstance(model, str) and model else None,
+                                       mode=_mode(b))
 
     return Handler
 

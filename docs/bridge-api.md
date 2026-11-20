@@ -100,6 +100,7 @@ uses it. Returns the new thread view. Choosing the current model changes nothing
 
 ```json
 {"id": "jqlcag76", "title": "Fix login", "state": "done", "model": "GPT-6.2",
+ "mode": "default", "plan_mode": true,
  "v": 264, "cursor": 1000005,
  "more_before": true,
  "entries": [
@@ -124,6 +125,11 @@ uses it. Returns the new thread view. Choosing the current model changes nothing
   subagent thread's live state). When its thread exists, the entry has `thread` (its id)
   and its `html` links to `t3:thread:<id>`. A subagent that's still working stays
   visible when its turn folds.
+- `mode`: `plan` while the thread is in plan mode (the agent proposes a plan instead of
+  changing things), otherwise `default`. `plan_mode`: whether the thread's model has a
+  plan mode at all (T3 hides its Plan toggle for providers that don't).
+- A proposed plan stays visible when its turn folds, as in the app. The message that
+  implements one shows as "Implement the plan." rather than repeating the plan.
 - A subagent thread's view has `parent: {id, title}`; top-level threads have `parent: null`.
 - `images`: ids of the images in the shown entries (see `/v1/images`).
 - Very long threads, whose full transcript T3 refuses, show their most recent part. A `tool` entry is one line covering
@@ -147,7 +153,13 @@ uses it. Returns the new thread view. Choosing the current model changes nothing
 | `needs_you`, approval | Allow · Allow for session · Decline |
 | `needs_you`, question | one per option, then Stop |
 | `working` | Stop |
-| `done` / `failed` / `idle` | 0–4 suggestions, then Continue · Summarize where we are |
+| `done` / `failed` / `idle` | Implement plan (if a plan is waiting), 0–4 suggestions, then Continue · Summarize where we are |
+
+**Implement plan** (`kind: "plan"`, id `p:<plan>`) appears while T3 marks the thread's
+latest proposed plan as actionable. It does what the app's Implement button does: leaves
+plan mode, sends `PLEASE IMPLEMENT THIS PLAN:` plus the plan, and links the turn to the
+plan (`sourcePlanRef`) so T3 marks it implemented. A tap on a plan that's already been
+implemented or replaced gets a 409.
 
 **`pending`**: what's being asked, when `state` is `needs_you`:
 
@@ -181,7 +193,11 @@ Same body as the thread view, plus `"changed": true|false`.
 ```jsonc
 {"reply": "c:continue", "client_msg_id": "<unique per tap>"}
 {"text": "Use the staging database", "client_msg_id": "..."}
+{"text": "Plan the migration first", "mode": "plan", "client_msg_id": "..."}
 ```
+
+With typed text, `mode` (`plan` or `default`) switches plan mode before sending, as
+sending with the app's Plan toggle changed does. Leave it out to keep the thread's mode.
 
 Returns the new thread view. The bridge waits briefly until T3 reacts, so the
 response already shows `working` (and a Stop button) after a send.
@@ -217,8 +233,8 @@ Returns the new thread view.
 {"project": "k3x9a2bq", "text": "Fix the flaky login test", "client_msg_id": "..."}
 ```
 
-Optional `"model": "<id from /v1/models>"` picks the model; the rest still comes from
-your settings.
+Optional `"model": "<id from /v1/models>"` picks the model, and `"mode": "plan"` starts
+the thread in plan mode; the rest still comes from your settings.
 
 Starts a thread and returns its view. The thread uses your own T3 settings, as a
 new thread in the app would: the model, permission mode and workspace come from

@@ -276,7 +276,10 @@ _SILENT = {"reasoning", "checkpoint", "todo_list", "compaction", "thread_created
 # folds into one "Worked for 1m 12s" row that can be expanded.
 
 _FOLD = "__fold__"
-_KEEP_WHEN_FOLDED = {"user_message", "notification", "user_input_request"}
+# What the app sends when you tap Implement on a proposed plan (apps/web/src/proposedPlan.ts).
+PLAN_PROMPT = "PLEASE IMPLEMENT THIS PLAN:\n"
+
+_KEEP_WHEN_FOLDED = {"user_message", "notification", "user_input_request", "proposed_plan"}
 
 
 def format_duration(ms: float) -> str:
@@ -521,10 +524,16 @@ def render_items(items: list[dict], child_info=None, image_ref=None) -> list[dic
                 continue
             flush()
             plan = item.get("markdown", "")
-            entries.append({"o": o, "role": "agent", "text": "Plan:\n" + clean_text(plan),
-                            "html": "<h4>Plan</h4>" + to_html(plan, image=_md_image(image_ref))})
+            # Plans usually open with their own heading ("# Plan: …"); add one if not.
+            titled = plan.lstrip().startswith("#")
+            entries.append({"o": o, "role": "agent",
+                            "text": ("" if titled else "Plan:\n") + clean_text(plan),
+                            "html": ("" if titled else "<h4>Plan</h4>")
+                            + to_html(plan, image=_md_image(image_ref))})
         elif kind == "user_message":
             text = item.get("text", "").strip()
+            if text.startswith(PLAN_PROMPT):
+                text = "Implement the plan."  # the rest repeats the plan shown just above
             has_image = any(isinstance(a, dict) and a.get("type") == "image"
                             for a in item.get("attachments") or [])
             if not text and not has_image:

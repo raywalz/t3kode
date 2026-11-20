@@ -30,6 +30,9 @@ Status: experimental, but in daily use on a Kobo Clara BW.
   answers them. After each turn, a small model suggests a few likely replies; the
   Reply button offers them, with Type… below. Typed replies use a box that grows
   with the text.
+- **Plan mode:** the Plan toggle in the reply box (and when starting a thread) has the
+  agent propose a plan first. When a plan is waiting, an Implement plan button starts the
+  work, the same as the app's Implement. Typing a reply with Plan on revises the plan.
 - **Model picker:** a thread's Model button switches the model its next turn uses, and
   a new thread can start on any model. Your T3 favorites come first, then More models…
   for the rest (minus the ones you've hidden in T3).

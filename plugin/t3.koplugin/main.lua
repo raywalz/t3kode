@@ -600,6 +600,9 @@ local function composeHtml(view, have, anchor)
     elseif state == "failed" then
         table.insert(parts, '<div class="status">' .. esc(_("The last run failed.")) .. "</div>")
     end
+    if str(view.mode) == "plan" then
+        table.insert(parts, '<div class="status">' .. esc(_("Plan mode is on.")) .. "</div>")
+    end
     local p = view.pending
     if type(p) == "table" then
         local lines = { '<div class="pending"><div class="pending-title">' .. esc(_("Needs you")) .. "</div>" }
@@ -879,14 +882,21 @@ function T3:typeReply(view)
     -- The box covers the thread, so its title bar names the thread; a question being
     -- answered goes under it.
     local question = typed == "answer" and p and (str(p.text) or _("Answer")) or nil
+    -- A message (not an answer) can switch plan mode, as the app's Plan toggle does.
+    local plan
+    if typed == "message" and view.plan_mode == true then
+        plan = self:planToggle(str(view.mode) == "plan")
+    end
     self:compose{
         title = str(view.title) or _("Reply"),
         description = question,
         hint = typed == "answer" and _("Your answer") or _("Message"),
         send_text = _("Send"),
+        extras = { plan and plan.button },
         on_send = function(text)
+            local mode = plan and (plan.on and "plan" or "default") or nil
             local ok, result = withBusy(_("Sending…"), function()
-                return self.api:reply(view.id, nil, text, self:showProgress(), self:expandList(view.id))
+                return self.api:reply(view.id, nil, text, self:showProgress(), self:expandList(view.id), mode)
             end)
             if ok then
                 self:showThread(result, { update = true, page = math.huge })
@@ -1033,16 +1043,42 @@ function T3:enterSecret(view)
     dialog:onShowKeyboard()
 end
 
+--- Relabel a button of the open text box (and keep the label if the box is rebuilt).
+function T3:setComposeButton(b, text)
+    b.text = text
+    local dialog = self.compose_dialog
+    local button = dialog and dialog.button_table and dialog.button_table:getButtonById(b.id)
+    if button then
+        button:setText(text, button.width)
+        UIManager:setDirty(dialog, "ui")
+    end
+end
+
+--- A Plan toggle for a text box: {on = bool, button = the box's button}.
+function T3:planToggle(on)
+    local toggle = { on = on }
+    local function label() return (toggle.on and "● " or "○ ") .. _("Plan") end
+    toggle.button = {
+        text = label(),
+        id = "plan",
+        callback = function()
+            toggle.on = not toggle.on
+            self:setComposeButton(toggle.button, label())
+        end,
+    }
+    return toggle
+end
+
 --- A text box that fills the screen (full width, down to the keyboard). The thread behind it is
 --- held still while it's open (background checks don't redraw over it), so there's
 --- nothing worth leaving visible.
 function T3:compose(o)
     local dialog
-    -- Cancel, an optional extra button (o.extra), then Send.
+    -- Cancel, optional extra buttons (o.extras), then Send.
     local row = {
         { text = _("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
     }
-    if o.extra then table.insert(row, o.extra) end
+    for _i, b in ipairs(o.extras or {}) do table.insert(row, b) end
     table.insert(row, {
         text = o.send_text,
         is_enter_default = true,
@@ -1159,26 +1195,22 @@ function T3:newThread(project)
             if dialog and dialog:isKeyboardVisible() then dialog:onCloseKeyboard() end
             self:pickModel({ project = project.id }, function(id, label)
                 model = id
-                -- Show the choice on the button, and keep it when the box is rebuilt.
-                extra.text = label or _("Model")
+                -- Show the choice on the button.
+                self:setComposeButton(extra, label or _("Model"))
                 dialog = self.compose_dialog
-                local button = dialog and dialog.button_table and dialog.button_table:getButtonById("model")
-                if button then
-                    button:setText(extra.text, button.width)
-                    UIManager:setDirty(dialog, "ui")
-                end
                 if dialog then dialog:onShowKeyboard() end
             end)
         end,
     }
+    local plan = self:planToggle(false)
     self:compose{
         title = T(_("New thread in %1"), str(project.title) or ""),
         hint = _("What should the agent do?"),
         send_text = _("Start"),
-        extra = extra,
+        extras = { extra, plan.button },
         on_send = function(text)
             local ok, view = withBusy(_("Starting…"), function()
-                return self.api:startThread(project.id, text, model)
+                return self.api:startThread(project.id, text, model, plan.on and "plan" or nil)
             end)
             if ok then
                 self:showThread(view)

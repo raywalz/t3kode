@@ -156,10 +156,11 @@ function Api:listChangedSince(v, limit)
     return self:request("GET", "/v1/threads/wait", { v = v, timeout = 0, limit = limit or 8 })
 end
 
-function Api:reply(id, reply_id, text, progress, expand)
+--- `mode`: "plan" or "default" switches plan mode before sending typed text; nil leaves it.
+function Api:reply(id, reply_id, text, progress, expand, mode)
     return self:requestWithRetry("POST", "/v1/threads/" .. id .. "/reply", nil, {
         reply = reply_id, text = text, client_msg_id = Api.newMessageId(), progress = progress or nil,
-        expand = expand,
+        expand = expand, mode = mode,
     })
 end
 
@@ -174,9 +175,10 @@ function Api:settle(id, settled)
 end
 
 --- `model`: an id from Api:models(), or nil for the project's default.
-function Api:startThread(project_id, text, model)
+--- `mode`: "plan" starts it in plan mode.
+function Api:startThread(project_id, text, model, mode)
     return self:requestWithRetry("POST", "/v1/threads", nil, {
-        project = project_id, text = text, model = model, client_msg_id = Api.newMessageId(),
+        project = project_id, text = text, model = model, mode = mode, client_msg_id = Api.newMessageId(),
     })
 end
 
