@@ -155,6 +155,10 @@ uses it. Returns the new thread view. Choosing the current model changes nothing
   plan mode at all (T3 hides its Plan toggle for providers that don't).
 - A proposed plan stays visible when its turn folds, as in the app. The message that
   implements one shows as "Implement the plan." rather than repeating the plan.
+- `prs`: the thread's linked pull requests, open ones first, as T3 last read them (it
+  checks open ones every few minutes): `{number, repo, url, title, open, status}`, where
+  `status` sums one up like the app's PR row: `open · checks pass · needs review ·
+  conflicts`, `draft`, `merged`, `closed`, or `not synced` when T3 hasn't read it yet.
 - A subagent thread's view has `parent: {id, title}`; top-level threads have `parent: null`.
 - `images`: ids of the images in the shown entries (see `/v1/images`).
 - Very long threads, whose full transcript T3 refuses, show their most recent part. A `tool` entry is one line covering

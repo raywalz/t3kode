@@ -43,6 +43,33 @@ def thread_state(thread: dict) -> str:
     return "done"
 
 
+_CHECKS = {"passing": "checks pass", "failing": "checks fail", "pending": "checks running"}
+_REVIEW = {"approved": "approved", "changes-requested": "changes requested",
+           "review-required": "needs review"}
+
+
+def pull_requests(thread: dict) -> list[dict]:
+    """The thread's linked PRs, open ones first, each with a one-line status the way the
+    app's PR row sums it up: "open · checks pass · needs review · conflicts"."""
+    out = []
+    for pr in thread.get("pullRequests") or []:
+        snap = pr.get("snapshot") or {}
+        state = snap.get("state")
+        if state == "open" and snap.get("isDraft"):
+            state = "draft"
+        parts = [state or "not synced"]
+        if state in ("open", "draft"):
+            parts += [label for key, labels in (("checksState", _CHECKS), ("reviewDecision", _REVIEW))
+                      if (label := labels.get(snap.get(key) or ""))]
+            if snap.get("mergeability") == "conflicting":
+                parts.append("conflicts")
+        out.append({"number": pr.get("number"), "repo": pr.get("repository"), "url": pr.get("url"),
+                    "title": snap.get("title") or pr.get("repository") or "", "status": " · ".join(parts),
+                    "open": state in ("open", "draft")})
+    out.sort(key=lambda p: not p["open"])  # stable: T3's order within each
+    return out
+
+
 def is_unread(thread: dict) -> bool:
     finished = thread.get("latestRunCompletedAt")
     visited = thread.get("lastVisitedAt")

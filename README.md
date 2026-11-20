@@ -34,6 +34,8 @@ Status: experimental, but in daily use on a Kobo Clara BW.
 - **Plan mode:** the Plan toggle in the reply box (and when starting a thread) has the
   agent propose a plan first. When a plan is waiting, an Implement plan button starts the
   work, the same as the app's Implement. Typing a reply with Plan on revises the plan.
+- **Pull requests** linked to a thread show at its end with their status: open, draft
+  or merged, checks, review, and conflicts.
 - **Model picker:** a thread's Model button switches the model its next turn uses, and
   a new thread can start on any model. Your T3 favorites come first, then More models…
   for the rest (minus the ones you've hidden in T3).

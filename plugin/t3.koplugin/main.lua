@@ -706,6 +706,20 @@ local function composeHtml(view, have, anchor, page_break_you)
     elseif state == "failed" then
         table.insert(parts, '<div class="status">' .. esc(_("The last run failed.")) .. "</div>")
     end
+    -- Linked PRs, as T3 last synced them: "PR #12 open · checks pass · needs review".
+    -- (T3 checks open PRs every few minutes, so there's no "as of" to show.)
+    local prs = {}
+    for _i, pr in ipairs(type(view.prs) == "table" and view.prs or {}) do
+        local number = type(pr.number) == "number" and tostring(pr.number) or str(pr.number) or "?"
+        local line = "<b>#" .. esc(number) .. "</b> " .. esc(str(pr.status) or "")
+        if str(pr.title) then line = line .. " · <i>" .. esc(str(pr.title)) .. "</i>" end
+        table.insert(prs, "<p>" .. line .. "</p>")
+    end
+    if #prs > 0 then
+        local heading = #prs > 1 and _("Pull requests") or _("Pull request")
+        table.insert(parts, '<div class="prs"><div class="pending-title">' .. esc(heading)
+            .. "</div>" .. table.concat(prs) .. "</div>")
+    end
     if str(view.mode) == "plan" then
         table.insert(parts, '<div class="status">' .. esc(_("Plan mode is on.")) .. "</div>")
     end

@@ -755,6 +755,25 @@ class BridgeTests(unittest.TestCase):
         self.assertNotIn("Thread t1", self._titles(self.b.thread_list()).get("Alpha", []))
 
 
+    def test_view_sums_up_linked_prs(self):
+        snap = lambda **kw: {"title": "Fix it", "isDraft": False, "syncedAt": "2026-01-05T00:00:00Z", **kw}
+        self.t3.threads["t1"] = dict(self.t3.threads["t1"], updatedAt="2026-01-06T00:00:00Z", pullRequests=[
+            {"number": 3, "repository": "me/app", "url": "u3", "snapshot": snap(state="merged")},
+            {"number": 4, "repository": "me/app", "url": "u4", "snapshot": snap(
+                state="open", checksState="failing", reviewDecision="approved", mergeability="conflicting")},
+            {"number": 5, "repository": "me/app", "url": "u5", "snapshot": snap(state="open", isDraft=True)},
+            {"number": 6, "repository": "me/app", "url": "u6", "snapshot": None}])
+        self.b.refresh()
+        v = self.b.thread_view(self.s1)
+        self.assertEqual([(p["number"], p["status"]) for p in v["prs"]], [
+            (4, "open · checks fail · approved · conflicts"), (5, "draft"),
+            (3, "merged"), (6, "not synced")])
+        # Checks finishing changes the view.
+        self.t3.threads["t1"]["pullRequests"][1]["snapshot"]["checksState"] = "passing"
+        self.b.refresh()
+        self.assertNotEqual(self.b.thread_view(self.s1)["v"], v["v"])
+
+
 class TokenTests(unittest.TestCase):
     class Client:
         def __init__(self, days_left, valid=("old", "new")):

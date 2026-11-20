@@ -78,7 +78,8 @@ def _wake_key(t: dict) -> tuple:
             None if state == "working" else t.get("itemCount"),
             model.get("instanceId"), model.get("model"),
             t.get("interactionMode"), bool(t.get("hasActionableProposedPlan")),
-            bool(t.get("pinnedAt")), _snoozed(t))
+            bool(t.get("pinnedAt")), _snoozed(t),
+            tuple((p["number"], p["status"]) for p in render.pull_requests(t)))
 
 
 def _content_version(body: dict, progress: bool) -> str:
@@ -86,6 +87,7 @@ def _content_version(body: dict, progress: bool) -> str:
     steps are left out, so new steps don't count as a change until the turn ends."""
     shown = {k: body[k] for k in ("title", "state", "model", "mode", "more_before", "pending",
                                   "replies", "typed")}
+    shown["prs"] = [(p["number"], p["status"], p["title"]) for p in body["prs"]]
     if progress or body["state"] != "working":
         shown["entries"] = [(e["role"], e["text"], e.get("expanded")) for e in body["entries"]]
     raw = json.dumps(shown, sort_keys=True, ensure_ascii=False).encode()
@@ -489,6 +491,7 @@ class Bridge:
             "model": self._model_label(t.get("modelSelection")),
             "mode": "plan" if t.get("interactionMode") == "plan" else "default",
             "plan_mode": self._plan_mode_ok(t.get("modelSelection")),
+            "prs": render.pull_requests(t),
             "parent": ({"id": render.short_id(parent["id"]), "title": parent.get("title") or "Untitled"}
                        if parent and _is_subagent(t) else None),
             "cursor": cursor, "more_before": more_before, "entries": shown,
