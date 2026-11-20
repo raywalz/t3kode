@@ -1,0 +1,29 @@
+# systemd user service for the t3-koreader bridge.
+#
+# Install (adjust the path to your checkout):
+#   sed "s#@REPO@#$HOME/path/to/t3-koreader#" contrib/t3-bridge.service \
+#       > ~/.config/systemd/user/t3-bridge.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now t3-bridge
+#
+# For it to run without an active login session: loginctl enable-linger "$USER"
+# Logs: journalctl --user -u t3-bridge -f
+
+[Unit]
+Description=t3-koreader bridge (T3 Code for e-readers)
+# If T3 or the BRIDGE_HOST address (e.g. a VPN interface) isn't up yet at boot,
+# the bridge exits and systemd retries until it is.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO@/bridge
+ExecStart=/usr/bin/env python3 -m t3bridge --env @REPO@/.env
+Restart=on-failure
+RestartSec=5
+# Unbuffered output so logs reach the journal promptly.
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

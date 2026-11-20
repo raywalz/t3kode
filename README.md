@@ -27,6 +27,9 @@ Try it from the same machine:
 curl -H "authorization: Bearer $BRIDGE_TOKEN" http://127.0.0.1:8787/v1/threads
 ```
 
+To keep it running, install it as a systemd user service; see the comments at the
+top of [contrib/t3-bridge.service](contrib/t3-bridge.service).
+
 The device API is described in [docs/bridge-api.md](docs/bridge-api.md). Run the
 tests with `cd bridge && python3 -m unittest discover -s tests`.
 
