@@ -57,7 +57,7 @@ end
 --- Returns ok, body_or_error_message, http_status.
 function Api:request(method, path, params, body)
     if not self:configured() then
-        return false, "Set the bridge address first (Tools → T3 Code)."
+        return false, "Set the bridge address first (Tools → More tools → T3 Code settings)."
     end
     local sink = {}
     local data = body and JSON.encode(body) or nil

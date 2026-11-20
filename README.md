@@ -78,8 +78,8 @@ To keep it running, install it as a systemd user service. The steps are at the t
 ### 2. Install the plugin
 
 Copy `plugin/t3.koplugin` into KOReader's `plugins/` folder (over USB or SSH) and
-restart KOReader. Open **Tools → T3 Code**, then set **Bridge address**
-(`http://<bridge host>:8787`) and **Bridge token**. Or write the settings file
+restart KOReader. Open **Tools → More tools → T3 Code settings**, then set
+**Bridge address** (`http://<bridge host>:8787`) and **Bridge token**. Or write the settings file
 `koreader/settings/t3.lua` directly:
 
 ```lua
@@ -89,8 +89,8 @@ return {
 }
 ```
 
-Then **Tools → T3 Code → Threads**. You can also bind that to a gesture: the action is
-"T3 Code threads".
+Then open **T3 Code**, the first item in the Tools tab. You can also bind it to a
+gesture: the action is "T3 Code threads".
 
 ## Trying it without T3
 

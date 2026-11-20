@@ -60,15 +60,33 @@ function T3:makeApi()
     self.api = Api.new(self.settings:readSetting("bridge_url"), self.settings:readSetting("bridge_token"))
 end
 
+-- Put "T3 Code" first in the Tools tab of both the file browser and the reader.
+-- The menu order tables are shared modules that plugins may extend (KOReader's own
+-- ui/plugin/insert_menu does the same for "More tools"). Done once per process.
+local function placeFirstInTools()
+    for _i, name in ipairs({ "ui/elements/filemanager_menu_order", "ui/elements/reader_menu_order" }) do
+        local ok, order = pcall(require, name)
+        if ok and type(order) == "table" and type(order.tools) == "table" then
+            local present = false
+            for _j, id in ipairs(order.tools) do
+                if id == "t3" then present = true end
+            end
+            if not present then table.insert(order.tools, 1, "t3") end
+        end
+    end
+end
+
 function T3:addToMainMenu(menu_items)
+    placeFirstInTools()
+    -- One tap from the Tools tab opens the thread list.
     menu_items.t3 = {
         text = _("T3 Code"),
+        callback = function() self:onT3Open() end,
+    }
+    menu_items.t3_settings = {
+        text = _("T3 Code settings"),
         sorting_hint = "more_tools",
         sub_item_table = {
-            {
-                text = _("Threads"),
-                callback = function() self:onT3Open() end,
-            },
             {
                 text = _("Show progress while working"),
                 help_text = _("Redraw an open thread as the agent works, not only when its turn finishes."),
