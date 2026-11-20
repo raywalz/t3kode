@@ -26,6 +26,7 @@ local _ = require("gettext")
 local T = require("ffi/util").template
 
 local Api = require("t3_api")
+local Gestures = require("t3_gestures")
 local ThreadView = require("t3_threadview")
 
 local LIST_LIMIT = 8
@@ -321,6 +322,7 @@ function T3:showList(project_id, title)
         return true
     end
     menu.onLeftButtonTap = function() self:showListActions() end
+    Gestures.attach(menu)
     self.list = { menu = menu, v = body.v, params = params, project_id = project_id, parent = self.list }
     UIManager:show(menu)
     self:scheduleListPoll()
@@ -654,6 +656,7 @@ function T3:showThread(view, opts)
             end
         end,
     }
+    Gestures.attach(viewer)
     self.viewer = viewer
     self.view = view
     -- Show the new view before closing the old one, so nothing underneath flashes through.
@@ -974,6 +977,7 @@ function T3:showOlder(view, before)
             { text = _("Close"), callback = function() UIManager:close(older_viewer) end },
         }},
     }
+    Gestures.attach(older_viewer)
     UIManager:show(older_viewer)
 end
 

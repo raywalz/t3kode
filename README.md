@@ -95,6 +95,11 @@ return {
 Then open **T3 Code**, the first item in the Tools tab. You can also bind it to a
 gesture: the action is "T3 Code threads".
 
+Your KOReader gestures keep working inside the plugin: edge swipes for brightness
+and warmth, multiswipes, corner taps, and swiping down from the top for KOReader's
+menu. Swipes go to your gestures first; taps and holds only when they miss a button,
+link, or list item.
+
 ## Trying it without T3
 
 ```sh
