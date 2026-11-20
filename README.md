@@ -28,7 +28,7 @@ Status: experimental, but in daily use on a Kobo Clara BW.
 - **Replies:** T3's pending approvals (Allow / Allow for session / Decline) and questions
   (single or multiple choice) are buttons, answered the same way the desktop app
   answers them. After each turn, a small model suggests a few likely replies; the
-  Reply… button offers them, with Type… below. Typed replies use a box that grows
+  Reply button offers them, with Type… below. Typed replies use a box that grows
   with the text.
 - **E-ink friendly updates:** the screen redraws only when what it shows changes, without
   a full-screen flash. Optionally, follow a turn's steps as they happen.

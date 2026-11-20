@@ -569,7 +569,7 @@ end
 
 local SHORT_LABELS = { ["c:summarize"] = _("Summarize"), ["c:continue"] = _("Continue"), ["c:stop"] = _("Stop") }
 
---- The Reply… button: the suggested replies, then Type… to write your own.
+--- The Reply button: the suggested replies, then Type… to write your own.
 --- With no suggestions it goes straight to typing.
 function T3:showReplyDialog(view, suggestions, can_type)
     if #suggestions == 0 then return self:typeReply(view) end
@@ -601,7 +601,7 @@ function T3:threadButtons(view)
     local rows = {}
     local shortcuts = {}
     local answers = {}
-    local suggestions = {} -- offered by the Reply… button
+    local suggestions = {} -- offered by the Reply button
     for _i, r in ipairs(view.replies or {}) do
         local id = str(r.id)
         local button = {
@@ -630,7 +630,7 @@ function T3:threadButtons(view)
     local typed = str(view.typed) or "message"
     table.insert(rows, {
         {
-            text = _("Reply…"),
+            text = _("Reply"),
             enabled = typed ~= "none" or #suggestions > 0,
             callback = function() self:showReplyDialog(view, suggestions, typed ~= "none") end,
         },
@@ -642,10 +642,6 @@ function T3:threadButtons(view)
         {
             text = _("Refresh"),
             callback = function() self:reloadThread(view.id) end,
-        },
-        {
-            text = _("Close"),
-            callback = function() self:closeThread() end,
         },
     })
     return rows
@@ -678,12 +674,15 @@ function T3:showThread(view, opts)
             local image = uri:match("^t3:img:(%w+)$")
             if image then return self:showImage(image) end
         end,
+        -- The title bar's X (or Back) closes the thread.
         close_callback = function()
             if self.viewer == viewer then
                 self:stopThreadPoll()
                 self.viewer = nil
                 self.view = nil
-                self:returnToParent(view)
+                if self:returnToParent(view) then return end
+                -- Pick up whatever changed while the thread was open.
+                pcall(function() self:refreshList(false) end)
             end
         end,
     }
@@ -694,18 +693,6 @@ function T3:showThread(view, opts)
     UIManager:show(viewer)
     if old then UIManager:close(old) end
     self:scheduleThreadPoll()
-end
-
-function T3:closeThread()
-    self:stopThreadPoll()
-    local viewer = self.viewer
-    local view = self.view
-    self.viewer = nil
-    self.view = nil
-    if viewer then UIManager:close(viewer) end
-    if view and self:returnToParent(view) then return end
-    -- Pick up whatever changed while the thread was open.
-    pcall(function() self:refreshList(false) end)
 end
 
 --- Open a subagent's thread from its parent. Closing it comes back to the parent.
@@ -1005,7 +992,6 @@ function T3:showOlder(view, before)
                     self:showOlder(view, first)
                 end,
             },
-            { text = _("Close"), callback = function() UIManager:close(older_viewer) end },
         }},
     }
     Gestures.attach(older_viewer)
