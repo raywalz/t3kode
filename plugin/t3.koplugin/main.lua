@@ -87,32 +87,6 @@ function T3:addToMainMenu(menu_items)
         text = _("T3 Code"),
         callback = function() self:onT3Open() end,
     }
-    menu_items.t3_settings = {
-        text = _("T3 Code settings"),
-        sorting_hint = "more_tools",
-        sub_item_table = {
-            {
-                text = _("Show progress while working"),
-                help_text = _("Redraw an open thread as the agent works, not only when its turn finishes."),
-                checked_func = function() return self:showProgress() end,
-                callback = function()
-                    self.settings:saveSetting("show_progress", not self:showProgress())
-                    self.settings:flush()
-                end,
-            },
-            {
-                text = _("Bridge address"),
-                keep_menu_open = true,
-                callback = function() self:editSetting("bridge_url", _("Bridge address"),
-                    "http://100.64.0.1:8787", false) end,
-            },
-            {
-                text = _("Bridge token"),
-                keep_menu_open = true,
-                callback = function() self:editSetting("bridge_token", _("Bridge token"), "", true) end,
-            },
-        },
-    }
 end
 
 function T3:showProgress()
@@ -148,6 +122,48 @@ function T3:toggleRun(view, run)
     runs[run] = not runs[run] or nil
     -- Stay on the page with the tapped row; its steps open right below it.
     self:reloadThread(view.id, self.viewer and self.viewer:currentPage() or nil)
+end
+
+--- The plugin's settings, from the menu button in the thread list. Each row shows its
+--- current state; changing one reopens the dialog so the label is current.
+function T3:showSettings()
+    local dialog
+    local function reopen()
+        UIManager:close(dialog)
+        self:showSettings()
+    end
+    local url = self.settings:readSetting("bridge_url")
+    local token = self.settings:readSetting("bridge_token")
+    dialog = ButtonDialog:new{
+        title = _("T3 Code settings"),
+        buttons = {
+            {{
+                text = self:showProgress() and _("Show progress while working: on")
+                    or _("Show progress while working: off"),
+                callback = function()
+                    self.settings:saveSetting("show_progress", not self:showProgress())
+                    self.settings:flush()
+                    reopen()
+                end,
+            }},
+            {{
+                text = T(_("Bridge address: %1"), (url and url ~= "") and url or _("not set")),
+                callback = function()
+                    UIManager:close(dialog)
+                    self:editSetting("bridge_url", _("Bridge address"), "http://100.64.0.1:8787", false)
+                end,
+            }},
+            {{
+                text = T(_("Bridge token: %1"), (token and token ~= "") and _("set") or _("not set")),
+                callback = function()
+                    UIManager:close(dialog)
+                    self:editSetting("bridge_token", _("Bridge token"), "", true)
+                end,
+            }},
+            {{ text = _("Close"), callback = function() UIManager:close(dialog) end }},
+        },
+    }
+    UIManager:show(dialog)
 end
 
 function T3:editSetting(key, title, hint, secret)
@@ -296,7 +312,13 @@ function T3:showList(project_id, title)
         return self.api:request("GET", "/v1/threads", params)
     end)
     if not ok then
-        notify(body)
+        -- With no list there's no menu button, so offer the settings here; a wrong
+        -- bridge address or token is the usual cause.
+        UIManager:show(ConfirmBox:new{
+            text = body,
+            ok_text = _("Settings"),
+            ok_callback = function() self:showSettings() end,
+        })
         return
     end
     local menu
@@ -397,6 +419,10 @@ function T3:showListActions()
             {{ text = _("Refresh"), callback = function()
                 UIManager:close(dialog)
                 withBusy(_("Refreshing…"), function() self:refreshList(true) end)
+            end }},
+            {{ text = _("Settings"), callback = function()
+                UIManager:close(dialog)
+                self:showSettings()
             end }},
         },
     }
