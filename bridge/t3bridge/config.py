@@ -42,6 +42,9 @@ class Config:
     # Seconds between T3 polls while something is live or a device is waiting, and otherwise.
     poll_fast: float = 2.0
     poll_slow: float = 20.0
+    # Optional command that prints a fresh T3 token (e.g. `t3 auth session issue ... --token-only`).
+    # The bridge runs it when its token is about to expire or is rejected.
+    t3_token_command: str = ""
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -62,6 +65,7 @@ class Config:
             suggest_count=int(env.get("SUGGEST_COUNT", "3")),
             poll_fast=float(env.get("POLL_FAST", "2")),
             poll_slow=float(env.get("POLL_SLOW", "20")),
+            t3_token_command=env.get("T3_TOKEN_COMMAND", ""),
         )
         if not cfg.device_token and not cfg.listens_on_loopback_only:
             raise SystemExit(

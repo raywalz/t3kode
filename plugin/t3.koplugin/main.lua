@@ -250,6 +250,10 @@ function T3:listItems(body, project_filter)
     if #items == 0 then
         table.insert(items, { text = _("No threads yet.") })
     end
+    -- A problem with the bridge itself (e.g. its T3 token is about to expire) goes on top.
+    if str(body.notice) then
+        table.insert(items, 1, { text = "! " .. str(body.notice), bold = true })
+    end
     return items
 end
 

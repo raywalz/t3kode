@@ -431,6 +431,77 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.t3.calls[-1][2]["runtime_mode"], "approval-required")
 
 
+class TokenTests(unittest.TestCase):
+    class Client:
+        def __init__(self, days_left, valid=("old", "new")):
+            self.token = "old"
+            self.days_left = days_left
+            self.valid = valid
+
+        def set_token(self, token):
+            self.token = token
+
+        def auth_session(self):
+            from datetime import datetime, timedelta, timezone
+            from t3bridge.t3client import T3Error
+            if self.token not in self.valid:
+                raise T3Error("HTTP 401", status=401)
+            days = self.days_left if self.token == "old" else 30
+            exp = datetime.now(timezone.utc) + timedelta(days=days)
+            return {"authenticated": True, "expiresAt": exp.isoformat().replace("+00:00", "Z")}
+
+    def setUp(self):
+        import sys
+        import tempfile
+        from pathlib import Path
+        self.dir = tempfile.TemporaryDirectory()
+        self.env = Path(self.dir.name) / ".env"
+        self.env.write_text("T3_URL=http://x\nT3_TOKEN=old\nBRIDGE_PORT=1\n")
+        self.cmd = f"{sys.executable} -c 'print(\"new\")'"
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def keeper(self, client, command=None):
+        from t3bridge.token import TokenKeeper
+        return TokenKeeper(client, self.cmd if command is None else command, self.env)
+
+    def test_renews_near_expiry_and_saves(self):
+        c = self.Client(days_left=3)
+        k = self.keeper(c)
+        k.check()
+        self.assertEqual(c.token, "new")
+        self.assertIn("T3_TOKEN=new\n", self.env.read_text())
+        self.assertIn("BRIDGE_PORT=1", self.env.read_text())
+        self.assertGreater(k.days_left, 29)
+        self.assertIsNone(k.notice())
+
+    def test_leaves_fresh_token_alone(self):
+        c = self.Client(days_left=20)
+        self.keeper(c).check()
+        self.assertEqual(c.token, "old")
+
+    def test_rejected_token_renews(self):
+        c = self.Client(days_left=20, valid=("new",))
+        self.keeper(c).check()
+        self.assertEqual(c.token, "new")
+
+    def test_without_command_warns_device(self):
+        c = self.Client(days_left=3)
+        k = self.keeper(c, command="")
+        k.check()
+        self.assertEqual(c.token, "old")
+        self.assertIn("expires in 3 days", k.notice())
+
+    def test_bad_command_keeps_old_token_and_warns(self):
+        c = self.Client(days_left=3)
+        k = self.keeper(c, command="false")
+        k.check()
+        self.assertEqual(c.token, "old")
+        self.assertIn("expires", k.notice())
+        self.assertIn("T3_TOKEN=old", self.env.read_text())
+
+
 class HttpTests(unittest.TestCase):
     def setUp(self):
         self.t3 = FakeT3()

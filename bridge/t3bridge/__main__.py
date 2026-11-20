@@ -11,6 +11,7 @@ from .core import Bridge
 from .server import serve
 from .suggest import Suggester
 from .t3client import T3Client
+from .token import TokenKeeper
 
 
 def main() -> None:
@@ -28,8 +29,10 @@ def main() -> None:
     if cfg.suggest_url:
         suggester = Suggester(cfg.suggest_url, cfg.suggest_api_key, cfg.suggest_model,
                               cfg.suggest_reasoning_effort, cfg.suggest_count)
-    bridge = Bridge(T3Client(cfg.t3_url, cfg.t3_token), suggester, poll_fast=cfg.poll_fast,
-                    poll_slow=cfg.poll_slow)
+    client = T3Client(cfg.t3_url, cfg.t3_token)
+    keeper = TokenKeeper(client, cfg.t3_token_command, args.env)
+    bridge = Bridge(client, suggester, poll_fast=cfg.poll_fast, poll_slow=cfg.poll_slow,
+                    token_keeper=keeper)
     bridge.start()
     httpd = serve(bridge, cfg.host, cfg.port, cfg.device_token)
     logging.info("listening on http://%s:%d (suggestions %s)", cfg.host, cfg.port,

@@ -53,6 +53,9 @@ when one of its subagents needs attention.
       "updated": "...", "preview": "I need your OK to run the migration."}]}]}
 ```
 
+An optional `notice` (string) reports a problem with the bridge itself, such as its T3
+token expiring within a week without a T3_TOKEN_COMMAND to renew it. Show it prominently.
+
 `state` is `needs_you | working | failed | done | idle`. `unread` means the last
 run finished after the thread was last opened (on any device). `limit` is per
 project. Pass `project` to get one project's full list.

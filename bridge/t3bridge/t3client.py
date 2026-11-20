@@ -24,7 +24,9 @@ ORCHESTRATION_PROTOCOL = "2"
 
 
 class T3Error(Exception):
-    pass
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status  # HTTP status, when the error came from an HTTP response
 
 
 class T3SocketError(T3Error):
@@ -76,8 +78,17 @@ class T3Client:
                 raw = resp.read()
         except urllib.error.HTTPError as e:
             detail = e.read()[:500].decode(errors="replace")
-            raise T3Error(f"{method} {path} -> HTTP {e.code}: {detail}") from None
+            raise T3Error(f"{method} {path} -> HTTP {e.code}: {detail}", status=e.code) from None
         return json.loads(raw) if raw else None
+
+    def set_token(self, token: str) -> None:
+        """Switch to a new token; the WebSocket reconnects with it on next use."""
+        self.token = token
+        self.close()
+
+    def auth_session(self) -> dict:
+        """{authenticated, scopes, expiresAt, ...} for the current token."""
+        return self._http("GET", "/api/auth/session")
 
     def environment(self) -> dict:
         return self._http("GET", "/.well-known/t3/environment")

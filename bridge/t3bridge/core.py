@@ -94,9 +94,11 @@ def _is_subagent(t: dict) -> bool:
 
 
 class Bridge:
-    def __init__(self, client, suggester=None, *, poll_fast: float = 2.0, poll_slow: float = 20.0):
+    def __init__(self, client, suggester=None, *, poll_fast: float = 2.0, poll_slow: float = 20.0,
+                 token_keeper=None):
         self.client = client
         self.suggester = suggester
+        self.token_keeper = token_keeper
         self.poll_fast = poll_fast
         self.poll_slow = poll_slow
         self.cond = threading.Condition()
@@ -128,6 +130,8 @@ class Bridge:
         env = self.client.environment()
         self.stop_capability = bool((env.get("capabilities") or {}).get("threadStop", False))
         log.info("T3 %s, protocol %s", env.get("serverVersion"), env.get("orchestrationProtocolVersion"))
+        if self.token_keeper:
+            self.token_keeper.check()
         self.refresh()
         threading.Thread(target=self._poll_loop, name="poll", daemon=True).start()
 
@@ -142,9 +146,13 @@ class Bridge:
                     or any(render.thread_state(t) == "working" for t in self.threads.values()))
             self._stop.wait(self.poll_fast if fast else self.poll_slow)
             try:
+                if self.token_keeper and self.token_keeper.due():
+                    self.token_keeper.check()
                 self.refresh()
             except Exception as e:  # keep polling through T3 restarts
                 log.warning("refresh failed: %s", e)
+                if getattr(e, "status", None) == 401 and self.token_keeper:
+                    self.token_keeper.check(rejected=True)
 
     def refresh(self) -> None:
         shell = self.client.shell_snapshot()
@@ -298,7 +306,11 @@ class Bridge:
                 "threads": [self._thread_row(t) for t in threads[:limit]],
             })
         out.sort(key=lambda g: g["updated"] or "", reverse=True)
-        return {"v": self.list_v, "projects": out}
+        body = {"v": self.list_v, "projects": out}
+        notice = self.token_keeper.notice() if self.token_keeper else None
+        if notice:
+            body["notice"] = notice
+        return body
 
     def _thread_row(self, t: dict) -> dict:
         cached = self.entries.get(t["id"])
