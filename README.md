@@ -113,3 +113,7 @@ an empty token, or set `BRIDGE_TOKEN`.
 KOReader's desktop build is handy for working on the plugin's screens. Run it with
 `EMULATE_READER_W=1072 EMULATE_READER_H=1448 EMULATE_READER_DPI=300` to match a
 Kobo Clara BW.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
