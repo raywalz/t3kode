@@ -47,6 +47,9 @@ img { max-width: 100%; }
 a { color: black; text-decoration: none; }
 .fold { border: 1px solid #888; padding: 0.25em 0.5em; color: #333; font-size: 0.9em; }
 .fold p { margin: 0; }
+.suggestions { margin-top: 0.8em; }
+.suggestion { border: 2px solid black; padding: 0.55em 0.6em; margin: 0 0 0.5em 0;
+              text-align: center; font-weight: bold; }
 ]]
 
 local ThreadView = InputContainer:extend{
@@ -98,6 +101,29 @@ function ThreadView:init()
         end or nil,
     }
     local box = self.html_widget.htmlbox_widget
+    -- MuPDF only makes a link's text tappable. Suggested replies are drawn as
+    -- full-width boxes, so a tap anywhere in or between the boxes counts as a
+    -- tap on the nearest one. `reach` is how far a box extends past its text:
+    -- .suggestion's padding, plus the line's leading, plus the border.
+    local reach = 0.7 * Screen:scaleBySize(self.font_size) + Size.border.thick
+    local exact = box.getLinkByPosition
+    box.getLinkByPosition = function(this, pos)
+        local link = exact(this, pos)
+        if link then return link end
+        local page = this.document:openPage(this.page_number)
+        local links = page:getPageLinks()
+        page:close()
+        local best, best_dist, top, bottom
+        for _i, l in ipairs(links or {}) do
+            if type(l.uri) == "string" and l.uri:match("^t3:reply:") then
+                top = math.min(top or l.y0, l.y0)
+                bottom = math.max(bottom or l.y1, l.y1)
+                local dist = math.max(l.y0 - pos.y, pos.y - l.y1, 0)
+                if not best or dist < best_dist then best, best_dist = l, dist end
+            end
+        end
+        if best and pos.y >= top - reach and pos.y < bottom + reach then return best end
+    end
     if self.start_page and self.start_page > 1 then
         box:setPageNumber(math.min(self.start_page, box.page_count))
         self.html_widget:_updateScrollBar()

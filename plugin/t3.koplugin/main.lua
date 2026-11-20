@@ -561,6 +561,18 @@ local function composeHtml(view, have)
         table.insert(lines, "</div>")
         table.insert(parts, table.concat(lines))
     end
+    -- Suggested replies sit at the very end, so they only take room once you've read down to them.
+    local sugg = {}
+    for i, r in ipairs(view.replies or {}) do
+        if r.kind == "suggestion" and r.enabled ~= false and str(r.label) then
+            table.insert(sugg, '<div class="suggestion"><a href="t3:reply:' .. i .. '">'
+                .. esc(str(r.label)) .. "</a></div>")
+        end
+    end
+    if #sugg > 0 then
+        table.insert(parts, '<div class="suggestions"><div class="label">' .. esc(_("Suggested replies"))
+            .. "</div>" .. table.concat(sugg) .. "</div>")
+    end
     if #parts == 0 then
         return "<p>" .. esc(_("Nothing here yet.")) .. "</p>"
     end
@@ -583,7 +595,8 @@ function T3:threadButtons(view)
                 self:sendReply(view, id, r.kind == "toggle")
             end,
         }
-        if r.kind == "shortcut" then
+        if r.kind == "suggestion" then -- shown at the end of the thread instead (composeHtml)
+        elseif r.kind == "shortcut" then
             table.insert(shortcuts, button)
         elseif r.kind == "secret" then
             table.insert(answers, 1, button) -- Enter secret, then Decline, in one row
@@ -646,6 +659,9 @@ function T3:showThread(view, opts)
             if child then return self:openChild(view, child) end
             local image = uri:match("^t3:img:(%w+)$")
             if image then return self:showImage(image) end
+            local n = uri:match("^t3:reply:(%d+)$")
+            local reply = n and view.replies and view.replies[tonumber(n)]
+            if reply then return self:sendReply(view, str(reply.id), false) end
         end,
         close_callback = function()
             if self.viewer == viewer then
