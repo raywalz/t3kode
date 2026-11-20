@@ -101,6 +101,33 @@ function T3:progressParam()
     return self:showProgress() and 1 or nil
 end
 
+--- Finished turns you've opened, per thread: { [thread id] = { [run id] = true } }.
+--- Kept in memory only; a fresh KOReader start shows every finished turn folded.
+function T3:expandedRuns(id)
+    self.expanded = self.expanded or {}
+    self.expanded[id] = self.expanded[id] or {}
+    return self.expanded[id]
+end
+
+function T3:expandList(id)
+    local list = {}
+    for run in pairs(self:expandedRuns(id)) do table.insert(list, run) end
+    table.sort(list)
+    return list
+end
+
+function T3:expandParam(id)
+    local list = self:expandList(id)
+    return #list > 0 and table.concat(list, ",") or nil
+end
+
+function T3:toggleRun(view, run)
+    local runs = self:expandedRuns(view.id)
+    runs[run] = not runs[run] or nil
+    -- Stay on the page with the tapped row; its steps open right below it.
+    self:reloadThread(view.id, self.viewer and self.viewer:currentPage() or nil)
+end
+
 function T3:editSetting(key, title, hint, secret)
     local dialog
     dialog = InputDialog:new{
@@ -303,7 +330,7 @@ end
 
 function T3:openThread(id)
     local ok, view = withBusy(_("Loading…"), function()
-        return self.api:thread(id, { visit = 1, progress = self:progressParam() })
+        return self.api:thread(id, { visit = 1, progress = self:progressParam(), expand = self:expandParam(id) })
     end)
     if not ok then
         notify(view)
@@ -329,6 +356,7 @@ local function composeHtml(view, show_progress)
         local role = str(e.role) or "note"
         local body = str(e.html) or ("<p>" .. esc(str(e.text)) .. "</p>")
         local label = ROLE_LABEL[role]
+        if role == "fold" then label = nil end
         table.insert(parts, '<div class="entry ' .. role .. '">'
             .. (label and ('<div class="label">' .. esc(label) .. "</div>") or "")
             .. body .. "</div>")
@@ -411,7 +439,7 @@ function T3:threadButtons(view)
     return rows
 end
 
-function T3:showThread(view)
+function T3:showThread(view, page)
     local old = self.viewer
     self.viewer = nil
     if old then UIManager:close(old) end
@@ -420,6 +448,11 @@ function T3:showThread(view)
         title = str(view.title) or _("Thread"),
         html = composeHtml(view, self:showProgress()),
         buttons = self:threadButtons(view),
+        start_page = page,
+        link_callback = function(uri)
+            local run = uri:match("^t3:run:(%w+)$")
+            if run then self:toggleRun(view, run) end
+        end,
         close_callback = function()
             if self.viewer == viewer then
                 self:stopThreadPoll()
@@ -444,15 +477,15 @@ function T3:closeThread()
     pcall(function() self:refreshList(false) end)
 end
 
-function T3:reloadThread(id)
+function T3:reloadThread(id, page)
     local ok, view = withBusy(_("Refreshing…"), function()
-        return self.api:thread(id, { progress = self:progressParam() })
+        return self.api:thread(id, { progress = self:progressParam(), expand = self:expandParam(id) })
     end)
     if not ok then
         notify(view)
         return
     end
-    self:showThread(view)
+    self:showThread(view, page)
 end
 
 function T3:stopThreadPoll()
@@ -473,7 +506,8 @@ function T3:scheduleThreadPoll()
         self.thread_poll = nil
         if self.view ~= view then return end
         if NetworkMgr:isConnected() then
-            local ok, body = self.api:changedSince(view.id, view.v, self:progressParam())
+            local ok, body = self.api:changedSince(view.id, view.v, self:progressParam(),
+                self:expandParam(view.id))
             if self.view ~= view then return end
             if ok and body.changed == true then
                 self:showThread(body)
@@ -488,7 +522,7 @@ end
 function T3:sendReply(view, reply_id)
     local function go()
         local ok, result = withBusy(_("Sending…"), function()
-            return self.api:reply(view.id, reply_id, nil, self:showProgress())
+            return self.api:reply(view.id, reply_id, nil, self:showProgress(), self:expandList(view.id))
         end)
         if ok then
             self:showThread(result)
@@ -530,7 +564,8 @@ function T3:typeReply(view)
                     if not text:match("%S") then return end
                     UIManager:close(dialog)
                     local ok, result = withBusy(_("Sending…"), function()
-                        return self.api:reply(view.id, nil, text, self:showProgress())
+                        return self.api:reply(view.id, nil, text, self:showProgress(),
+                            self:expandList(view.id))
                     end)
                     if ok then
                         self:showThread(result)
@@ -548,7 +583,7 @@ end
 function T3:showOlder(view, before)
     if type(before) ~= "number" then return end
     local ok, older = withBusy(_("Loading…"), function()
-        return self.api:thread(view.id, { before = before, turns = 3 })
+        return self.api:thread(view.id, { before = before, turns = 3, expand = self:expandParam(view.id) })
     end)
     if not ok then
         notify(older)

@@ -7,10 +7,12 @@ E-ink fonts may lack emoji, so output sticks to common symbols (▸ •).
 from __future__ import annotations
 
 import base64
+import html
 import hashlib
 import posixpath
 import re
 import shlex
+from datetime import datetime
 
 from .markdown import text_html, to_html
 
@@ -244,6 +246,86 @@ _SILENT = {"reasoning", "checkpoint", "todo_list", "compaction", "thread_created
            "run_interrupt_request"}
 
 
+# ---- turn folding -----------------------------------------------------------
+# Like T3's web timeline (MessagesTimeline.logic.ts): while a run is live every step
+# shows; once it ends, everything between your message and the agent's final reply
+# folds into one "Worked for 1m 12s" row that can be expanded.
+
+_FOLD = "__fold__"
+_KEEP_WHEN_FOLDED = {"user_message", "notification", "user_input_request"}
+
+
+def format_duration(ms: float) -> str:
+    """Port of T3's formatDuration (packages/shared/src/orchestrationTiming.ts)."""
+    if ms < 0:
+        return "0ms"
+    if ms < 1000:
+        return f"{max(1, round(ms))}ms"
+    if ms < 10_000:
+        return f"{round(ms / 100) / 10:g}s"
+    total = round(ms / 1000)
+    if total < 60:
+        return f"{total}s"
+    h, m, sec = total // 3600, (total % 3600) // 60, total % 60
+    parts = ([f"{h}h"] if h else []) + ([f"{m}m"] if m else []) + ([f"{sec}s"] if (sec or m) else [])
+    return " ".join(parts)
+
+
+def _ts(value) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def fold_runs(items: list[dict], live_run: str | None = None,
+              expanded: frozenset[str] = frozenset()) -> list[dict]:
+    """Hide the work of finished runs behind a fold marker item.
+
+    `live_run`: the run still going (never folded). `expanded`: short ids of runs the
+    user opened; those keep all items, with the marker shown as open.
+    """
+    groups: dict[object, list[dict]] = {}
+    for i, it in enumerate(items):
+        groups.setdefault(it.get("runId") or ("norun", i), []).append(it)
+    out: list[dict] = []
+    for run, its in groups.items():
+        if not isinstance(run, str) or run == live_run or any(
+                it.get("type") in ("run_interrupt_result", "error")
+                or (it.get("type") == "assistant_message" and it.get("streaming")) for it in its):
+            out += its  # live, stopped, or failed runs stay open, as in the web UI
+            continue
+        terminal = max((n for n, it in enumerate(its) if it.get("type") == "assistant_message"
+                        and (it.get("text") or "").strip()), default=None)
+        hidden = set()
+        for n, it in enumerate(its):
+            kind = it.get("type")
+            if n == terminal or kind in _KEEP_WHEN_FOLDED or kind in _SILENT:
+                continue
+            if terminal is not None and n > terminal and kind not in _TOOL_KINDS:
+                continue  # notes after the final reply stay visible
+            hidden.add(n)
+        if not hidden:
+            out += its
+            continue
+        starts = [t for t in (_ts(it.get("startedAt")) for it in its) if t]
+        ends = [t for t in (_ts(it.get("completedAt") or it.get("updatedAt")) for it in its) if t]
+        label = "Worked"
+        if starts and ends:
+            label = f"Worked for {format_duration((max(ends) - min(starts)).total_seconds() * 1000)}"
+        rshort = short_id(run)
+        is_open = rshort in expanded
+        first = min(hidden)
+        for n, it in enumerate(its):
+            if n == first:
+                out.append({"type": _FOLD, "ordinal": it.get("ordinal", 0), "run": rshort,
+                            "label": label, "expanded": is_open})
+            if n in hidden and not is_open:
+                continue
+            out.append(it)
+    return out
+
+
 def render_items(items: list[dict]) -> list[dict]:
     """Turn items → entries [{o, role: you|agent|tool|note, text}], tool runs collapsed.
 
@@ -264,6 +346,14 @@ def render_items(items: list[dict]) -> list[dict]:
     for item in items:
         kind = item.get("type")
         o = item.get("ordinal", 0)
+        if kind == _FOLD:
+            flush()
+            mark = "▾" if item["expanded"] else "▸"
+            text = f"{mark} {item['label']}"
+            entries.append({"o": o, "role": "fold", "run": item["run"], "expanded": item["expanded"],
+                            "text": text,
+                            "html": f'<p><a href="t3:run:{item["run"]}">{html.escape(text)}</a></p>'})
+            continue
         if kind in _TOOL_KINDS:
             tool = describe_tool(item)
             if tool is not None:

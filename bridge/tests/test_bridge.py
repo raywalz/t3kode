@@ -126,6 +126,41 @@ class MarkdownTests(unittest.TestCase):
         self.assertEqual(e[0]["text"], "Hi <there>")
 
 
+def run_item(o, run, type_, start, end, **kw):
+    return item(o, type_, runId=run, startedAt=f"2026-01-01T00:{start}Z", completedAt=f"2026-01-01T00:{end}Z", **kw)
+
+
+TWO_RUNS = [
+    run_item(1, "r1", "user_message", "00:00", "00:00", text="Do it", createdBy="user"),
+    run_item(2, "r1", "command_execution", "00:01", "00:05", input="make"),
+    run_item(3, "r1", "assistant_message", "00:05", "00:06", text="Built. Testing next.", streaming=False),
+    run_item(4, "r1", "command_execution", "00:06", "01:10", input="pytest"),
+    run_item(5, "r1", "assistant_message", "01:11", "01:12", text="All done.", streaming=False),
+    run_item(6, "r2", "user_message", "02:00", "02:00", text="Again", createdBy="user"),
+    run_item(7, "r2", "command_execution", "02:01", "02:30", input="make"),
+]
+
+
+class FoldTests(unittest.TestCase):
+    def test_finished_run_folds_to_worked_for(self):
+        entries = render.render_items(render.fold_runs(TWO_RUNS, live_run="r2"))
+        self.assertEqual([(e["role"], e["text"]) for e in entries], [
+            ("you", "Do it"), ("fold", "▸ Worked for 1m 12s"), ("agent", "All done."),
+            ("you", "Again"), ("tool", "▸ ran make")])
+        self.assertIn('href="t3:run:', entries[1]["html"])
+
+    def test_expanded_run_shows_every_step(self):
+        r1 = render.short_id("r1")
+        entries = render.render_items(render.fold_runs(TWO_RUNS, live_run="r2", expanded=frozenset({r1})))
+        self.assertEqual([e["role"] for e in entries[:6]], ["you", "fold", "tool", "agent", "tool", "agent"])
+        self.assertTrue(entries[1]["expanded"])
+
+    def test_stopped_runs_stay_open(self):
+        items = TWO_RUNS[:4] + [run_item(5, "r1", "run_interrupt_result", "01:00", "01:00", message="Stopped")]
+        roles = [e["role"] for e in render.render_items(render.fold_runs(items))]
+        self.assertNotIn("fold", roles)
+
+
 class RenderTests(unittest.TestCase):
     def test_collapses_tools_and_cleans_text(self):
         entries = render.render_items(CONVERSATION)

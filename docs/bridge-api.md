@@ -79,7 +79,12 @@ Same body as the list, plus `"changed": true|false`.
  "typed": "message"}
 ```
 
-- `entries`: `role` is `you | agent | tool | note`. A `tool` entry is one line covering
+- Finished turns fold the way T3's web UI does: your message, then one `fold` entry
+  ("▸ Worked for 1m 12s"), then the agent's final reply. Notifications and answered
+  questions stay visible. The turn that's still running is never folded. The fold's
+  `html` is a link to `t3:run:<run>`. Pass `expand=<run>,<run>` (in the reply body:
+  `"expand": [...]`) to show those turns' steps, with the fold shown open ("▾").
+- `entries`: `role` is `you | agent | tool | note | fold`. A `tool` entry is one line covering
   a run of consecutive tool calls. `note` covers notifications, errors, questions and
   their answers, and messages sent by agents rather than you.
 - Default window: everything from the `turns`-th most recent message of yours.

@@ -88,7 +88,7 @@ class Bridge:
         self.sigs: dict[str, tuple] = {}
         self.wake_keys: dict[str, tuple] = {}
         self.by_short: dict[str, str] = {}  # short id -> long id (threads and projects)
-        self.entries: dict[str, tuple[tuple, list[dict]]] = {}  # long id -> (sig, entries)
+        self.entries: dict[str, tuple] = {}  # long id -> (sig, items, unfolded entries)
         self.pending: dict[str, tuple[tuple, list[dict]]] = {}
         self.suggestions: dict[str, dict] = {}  # long id -> {cursor, status, items}
         self.partial_answers: dict[str, dict] = {}  # request id -> {question id: answer}
@@ -214,15 +214,20 @@ class Bridge:
             raise BridgeError(404, "no such thread")
         return t
 
-    def _entries(self, t: dict) -> list[dict]:
+    def _load(self, t: dict) -> tuple[list[dict], list[dict]]:
+        """(raw turn items, unfolded entries), cached until the thread changes."""
         sig = _signature(t)
         cached = self.entries.get(t["id"])
         if cached and cached[0] == sig:
-            return cached[1]
+            return cached[1], cached[2]
         items = [e["item"] for e in self.client.thread_transcript(t["id"])["items"]]
         entries = render.render_items(items)
-        self.entries[t["id"]] = (sig, entries)
-        return entries
+        self.entries[t["id"]] = (sig, items, entries)
+        return items, entries
+
+    def _entries(self, t: dict) -> list[dict]:
+        """Every step, unfolded: for suggestions and previews."""
+        return self._load(t)[1]
 
     def _pending(self, t: dict) -> list[dict]:
         if not t.get("pendingRuntimeRequest"):
@@ -266,7 +271,7 @@ class Bridge:
     def _thread_row(self, t: dict) -> dict:
         cached = self.entries.get(t["id"])
         lvm = (t.get("latestVisibleMessage") or {}).get("text")
-        prev = render.preview(cached[1]) if cached else (" ".join(lvm.split())[:80] if lvm else "")
+        prev = render.preview(cached[2]) if cached else (" ".join(lvm.split())[:80] if lvm else "")
         return {"id": render.short_id(t["id"]), "title": t.get("title") or "Untitled",
                 "state": render.thread_state(t), "unread": render.is_unread(t),
                 "updated": t.get("updatedAt"), "preview": prev}
@@ -279,13 +284,20 @@ class Bridge:
     # ---- thread view --------------------------------------------------------
 
     def thread_view(self, short: str, after: int | None = None, before: int | None = None,
-                    turns: int = 3, visit: bool = False, progress: bool = False) -> dict:
-        """`progress`: report the version that also changes mid-turn (see wait_thread)."""
+                    turns: int = 3, visit: bool = False, progress: bool = False,
+                    expand: frozenset[str] = frozenset()) -> dict:
+        """`progress`: report the version that also changes mid-turn (see wait_thread).
+        `expand`: short ids of finished runs to show unfolded."""
         self.last_device_at = time.monotonic()
         t = self._thread(short)
-        entries = self._entries(t)
+        items, unfolded = self._load(t)
         state = render.thread_state(t)
-        cursor = entries[-1]["o"] if entries else 0
+        cursor = unfolded[-1]["o"] if unfolded else 0
+        live_run = None
+        if state in ("working", "needs_you"):
+            live_run = t.get("activeRunId") or next(
+                (it.get("runId") for it in reversed(items) if it.get("runId")), None)
+        entries = render.render_items(render.fold_runs(items, live_run, frozenset(expand)))
 
         if after is not None:
             shown = [e for e in entries if e["o"] > after]
@@ -462,7 +474,8 @@ class Bridge:
         return result
 
     def reply(self, short: str, reply_id: str | None = None, text: str | None = None,
-              client_msg_id: str | None = None, progress: bool = False) -> dict:
+              client_msg_id: str | None = None, progress: bool = False,
+              expand: frozenset[str] = frozenset()) -> dict:
         self.last_device_at = time.monotonic()
         t = self._thread(short)
 
@@ -475,7 +488,7 @@ class Bridge:
             else:
                 raise BridgeError(400, "send `reply` or `text`")
             self._settle(t["id"], before)
-            return self.thread_view(short, progress=progress)
+            return self.thread_view(short, progress=progress, expand=expand)
 
         return self._once(client_msg_id, act)
 

@@ -43,6 +43,9 @@ hr { border: 0; border-top: 1px solid #888; margin: 0.5em 0; }
 .pending { border: 2px solid black; padding: 0.45em; margin-top: 0.6em; }
 .pending-title { font-weight: bold; margin-bottom: 0.25em; }
 .more { color: #444; font-size: 0.85em; text-align: center; margin-bottom: 0.8em; }
+a { color: black; text-decoration: none; }
+.fold { border: 1px solid #888; padding: 0.25em 0.5em; color: #333; font-size: 0.9em; }
+.fold p { margin: 0; }
 ]]
 
 local ThreadView = InputContainer:extend{
@@ -51,7 +54,9 @@ local ThreadView = InputContainer:extend{
     buttons = nil, -- ButtonTable rows
     font_size = 20,
     start_at_bottom = true,
+    start_page = nil, -- open on this page instead (e.g. to stay put after expanding a turn)
     close_callback = nil,
+    link_callback = nil, -- function(uri) for taps on links in the HTML
     covers_fullscreen = true,
 }
 
@@ -84,8 +89,17 @@ function ThreadView:init()
         width = self.width - 2 * pad,
         height = html_height,
         dialog = self,
+        html_link_tapped_callback = self.link_callback and function(link)
+            if type(link) == "table" and type(link.uri) == "string" then self.link_callback(link.uri) end
+        end or nil,
     }
-    if self.start_at_bottom then
+    local box = self.html_widget.htmlbox_widget
+    if self.start_page and self.start_page > 1 then
+        box:setPageNumber(math.min(self.start_page, box.page_count))
+        self.html_widget:_updateScrollBar()
+        box:freeBb()
+        box:_render()
+    elseif self.start_at_bottom and not self.start_page then
         self.html_widget:scrollToRatio(1)
     end
 
@@ -115,6 +129,10 @@ function ThreadView:init()
     if Device:hasKeys() then
         self.key_events = { Close = { { Device.input.group.Back } } }
     end
+end
+
+function ThreadView:currentPage()
+    return self.html_widget.htmlbox_widget.page_number
 end
 
 function ThreadView:onShow()
