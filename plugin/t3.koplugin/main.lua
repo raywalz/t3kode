@@ -292,6 +292,8 @@ function T3:listItems(body, project_filter)
             callback = function()
                 if not project_filter and str(p.id) then self:showList(p.id, str(p.title)) end
             end,
+            -- Hold a project's name to start a thread in it (not the Pinned group).
+            hold_callback = str(p.id) and p.pinned ~= true and function() self:projectActions(p) end or nil,
         })
         for _j, t in ipairs(p.threads or {}) do
             local state = str(t.state) or "done"
@@ -459,6 +461,22 @@ function T3:snoozeThread(t)
         }})
     end
     dialog = ButtonDialog:new{ title = _("Snooze until…"), buttons = rows }
+    UIManager:show(dialog)
+end
+
+--- Hold on a project's name in the list: start a thread in it.
+function T3:projectActions(p)
+    local dialog
+    dialog = ButtonDialog:new{
+        title = str(p.title) or _("Project"),
+        buttons = {
+            {{ text = _("New thread"), callback = function()
+                UIManager:close(dialog)
+                self:newThread({ id = p.id, title = str(p.title) })
+            end }},
+            {{ text = _("Cancel"), callback = function() UIManager:close(dialog) end }},
+        },
+    }
     UIManager:show(dialog)
 end
 
