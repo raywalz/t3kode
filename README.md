@@ -89,7 +89,7 @@ return {
 }
 ```
 
-Then open **T3 Code**, the first item in the Tools tab. You can also bind it to a
+Then open **T3 Code**, the first item in the first menu tab. You can also bind it to a
 gesture: the action is "T3 Code threads".
 
 ## Trying it without T3
