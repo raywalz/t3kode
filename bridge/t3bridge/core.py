@@ -361,7 +361,9 @@ class Bridge:
     def _thread_row(self, t: dict) -> dict:
         cached = self.entries.get(t["id"])
         lvm = (t.get("latestVisibleMessage") or {}).get("text")
-        prev = render.preview(cached[2]) if cached else (" ".join(lvm.split())[:80] if lvm else "")
+        if lvm:
+            lvm = " ".join(render.split_replies(lvm)[0].split())[:80]
+        prev = render.preview(cached[2]) if cached else (lvm or "")
         row = {"id": render.short_id(t["id"]), "title": t.get("title") or "Untitled",
                "state": render.thread_state(t), "unread": render.is_unread(t),
                "updated": t.get("updatedAt"), "preview": prev, "settled": _is_settled(t)}
@@ -547,7 +549,7 @@ class Bridge:
 
     def _wants_suggestions(self, tid: str) -> bool:
         t = self.threads.get(tid)
-        return bool(self.suggester and t and self._top_level(t))
+        return bool(t and self._top_level(t))
 
     def _schedule_suggestions(self, tid: str) -> dict | None:
         t = self.threads.get(tid)
@@ -561,6 +563,9 @@ class Bridge:
         if not entries or entries[-1]["role"] != "agent":
             return None
         cursor = entries[-1]["o"]
+        written = entries[-1].get("replies")  # the agent's own, from its reply
+        if written is None and self.suggester is None:
+            return None
         with self.cond:
             cur = self.suggestions.get(tid)
             if cur and cur["cursor"] == cursor and not (
@@ -569,6 +574,10 @@ class Bridge:
             slot = {"cursor": cursor, "status": "pending", "items": [], "done": threading.Event(),
                     "at": time.monotonic()}
             self.suggestions[tid] = slot
+            if written is not None:
+                slot.update(status="ready", items=written)
+                slot["done"].set()
+                return slot
         self.pool.submit(self._run_suggestions, tid, slot, entries[-12:])
         return slot
 

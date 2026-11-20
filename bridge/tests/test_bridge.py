@@ -230,6 +230,17 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(parse_suggestions('Sure:\n```json\n["A", "B", "A", 3]\n```', 3), ["A", "B"])
         self.assertEqual(parse_suggestions("no json here", 3), [])
 
+    def test_agent_written_replies_are_split_off(self):
+        text = 'Ready to ship.\n\n<!-- replies: ["Go", "Wait, run tests first"] -->\n'
+        self.assertEqual(render.split_replies(text), ("Ready to ship.", ["Go", "Wait, run tests first"]))
+        quoted = 'Use `<!-- replies: ["a"] -->` at the end.\n\nThat is all.'
+        self.assertEqual(render.split_replies(quoted), (quoted, None))  # only a trailing one counts
+        self.assertEqual(render.split_replies('Ok?\n<!-- ["Yes", "No"] -->'), ("Ok?", ["Yes", "No"]))
+        self.assertEqual(render.split_replies("Ok?\n<!-- note to self -->")[1], None)
+        e = render.render_items([item(1, "assistant_message", text=text, streaming=False)])
+        self.assertEqual((e[0]["text"], e[0]["replies"]), ("Ready to ship.", ["Go", "Wait, run tests first"]))
+        self.assertNotIn("replies", e[0]["html"])
+
 
 class BridgeTests(unittest.TestCase):
     def setUp(self):
@@ -377,6 +388,19 @@ class BridgeTests(unittest.TestCase):
         labels = [r["label"] for r in v["replies"]]
         self.assertEqual(labels, ["Yes, do it", "No, stop there", "Continue", "Summarize where we are"])
         self.assertEqual(v["typed"], "message")
+
+    def test_agent_written_replies_replace_the_model(self):
+        self.t3.items["t1"] = list(CONVERSATION[:-1]) + [item(
+            2000002, "assistant_message", streaming=False,
+            text='Answer two\n<!-- replies: ["Go", "Not yet"] -->')]
+        self.t3.threads["t1"] = dict(self.t3.threads["t1"], itemCount=98)
+        self.b.refresh()
+        v = self.b.thread_view(self.s1)
+        self.assertEqual([r["label"] for r in v["replies"]][:2], ["Go", "Not yet"])
+        self.assertEqual(v["entries"][-1]["text"], "Answer two")
+        self.assertEqual(self.sug.calls, 0)
+        self.b.reply(self.s1, reply_id=v["replies"][0]["id"])
+        self.assertEqual(self.t3.calls[-1][:2], ("send_message", ("t1", "Go")))
 
     def test_working_thread_offers_stop(self):
         v = self.b.thread_view(self.s2)

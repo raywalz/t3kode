@@ -111,6 +111,10 @@ Same body as the list, plus `"changed": true|false`.
 - `visit=1` marks the thread read in T3 (pass it when the user opens the thread).
 - When the thread has just finished, the call waits up to 12 s for suggestions
   already being generated, so one redraw shows both the reply and the buttons.
+- Suggestions come from the agent itself when its last reply ends with
+  `<!-- replies: ["Go", "Wait, run the tests first"] -->`. The bridge strips that
+  comment from the entry, and T3's desktop doesn't show HTML comments either.
+  Only a reply without one goes to the `SUGGEST_*` model, if it's configured.
 
 **`replies`**: buttons in display order. Send back `id` unchanged.
 

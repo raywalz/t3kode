@@ -15,6 +15,7 @@ import shlex
 from datetime import datetime
 
 from .markdown import image_placeholder, text_html, to_html
+from .suggest import parse_suggestions
 
 LIVE_STATUSES = {"queued", "preparing", "starting", "running", "waiting"}
 
@@ -49,6 +50,21 @@ def is_unread(thread: dict) -> bool:
 
 
 # ---- text cleanup -----------------------------------------------------------
+
+# Agents end a reply with <!-- replies: ["…", …] --> (see docs/bridge-api.md); some
+# leave out the "replies:" label, so a trailing comment holding an array counts. T3's
+# desktop hides HTML comments; the bridge strips it and offers the replies as buttons.
+_REPLIES = re.compile(r"\s*<!--\s*(?:replies\s*:\s*)?(\[.*?\])\s*-->\s*\Z", re.S | re.I)
+
+
+def split_replies(text: str) -> tuple[str, list[str] | None]:
+    """(text without the replies comment, the agent's suggested replies or None).
+    Only a comment that ends the message counts, so one quoted mid-reply stays."""
+    m = _REPLIES.search(text)
+    if not m:
+        return text, None
+    return text[: m.start()], parse_suggestions(m.group(1), 4)
+
 
 _LINK = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
 _BOLD = re.compile(r"(\*\*|__)(.+?)\1")
@@ -489,11 +505,17 @@ def render_items(items: list[dict], child_info=None, image_ref=None) -> list[dic
         if kind in _SILENT:
             continue
         if kind == "assistant_message":
-            if item.get("streaming") or not item.get("text", "").strip():
+            if item.get("streaming"):
+                continue
+            body, replies = split_replies(item.get("text", ""))
+            if not body.strip():
                 continue
             flush()
-            entries.append({"o": o, "role": "agent", "text": clean_text(item["text"]),
-                            "html": to_html(item["text"], image=_md_image(image_ref))})
+            entry = {"o": o, "role": "agent", "text": clean_text(body),
+                     "html": to_html(body, image=_md_image(image_ref))}
+            if replies is not None:
+                entry["replies"] = replies
+            entries.append(entry)
         elif kind == "proposed_plan":
             if item.get("streaming"):
                 continue
