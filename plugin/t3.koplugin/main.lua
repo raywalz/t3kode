@@ -230,10 +230,19 @@ function T3:listItems(body, project_filter)
             if state == "done" then
                 label = (t.unread == true and _("new") .. " · " or "") .. ago(t.updated)
             end
+            -- Subagents live inside their parent; say so when one needs attention.
+            local agents = type(t.agents) == "table" and t.agents or nil
+            local agent_needs_you = agents and (tonumber(agents.needs_you) or 0) > 0
+            if agent_needs_you and state ~= "needs_you" then
+                label = _("agent needs you")
+            elseif agents and (tonumber(agents.working) or 0) > 0 and state ~= "working"
+                    and state ~= "needs_you" then
+                label = _("agents working")
+            end
             table.insert(items, {
                 text = "    " .. (str(t.title) or _("Untitled")),
                 mandatory = label,
-                bold = state == "needs_you" or t.unread == true,
+                bold = state == "needs_you" or agent_needs_you or t.unread == true,
                 callback = function() self:openThread(t.id) end,
             })
         end
@@ -245,6 +254,7 @@ function T3:listItems(body, project_filter)
 end
 
 function T3:showList(project_id, title)
+    self.thread_stack = {}
     local params = { limit = project_id and 200 or LIST_LIMIT, project = project_id }
     local ok, body = withBusy(_("Loading threads…"), function()
         return self.api:request("GET", "/v1/threads", params)
@@ -300,7 +310,7 @@ function T3:scheduleListPoll()
         self.list_poll = nil
         if not self.list then return end
         -- Don't redraw the list while a thread is open on top of it.
-        if not self.viewer and NetworkMgr:isConnected() then
+        if not self.viewer and not self.typing and NetworkMgr:isConnected() then
             pcall(function() self:refreshList(false) end)
         end
         self:scheduleListPoll()
@@ -328,7 +338,7 @@ end
 -- ---------------------------------------------------------------------------
 -- thread view
 
-function T3:openThread(id)
+function T3:openThread(id, page)
     local ok, view = withBusy(_("Loading…"), function()
         return self.api:thread(id, { visit = 1, progress = self:progressParam(), expand = self:expandParam(id) })
     end)
@@ -336,7 +346,7 @@ function T3:openThread(id)
         notify(view)
         return
     end
-    self:showThread(view)
+    self:showThread(view, page and { page = page } or nil)
 end
 
 local function esc(text)
@@ -457,13 +467,16 @@ function T3:showThread(view, opts)
         refresh = (opts.update and old) and "ui" or "full",
         link_callback = function(uri)
             local run = uri:match("^t3:run:(%w+)$")
-            if run then self:toggleRun(view, run) end
+            if run then return self:toggleRun(view, run) end
+            local child = uri:match("^t3:thread:(%w+)$")
+            if child then return self:openChild(view, child) end
         end,
         close_callback = function()
             if self.viewer == viewer then
                 self:stopThreadPoll()
                 self.viewer = nil
                 self.view = nil
+                self:returnToParent(view)
             end
         end,
     }
@@ -478,11 +491,41 @@ end
 function T3:closeThread()
     self:stopThreadPoll()
     local viewer = self.viewer
+    local view = self.view
     self.viewer = nil
     self.view = nil
     if viewer then UIManager:close(viewer) end
+    if view and self:returnToParent(view) then return end
     -- Pick up whatever changed while the thread was open.
     pcall(function() self:refreshList(false) end)
+end
+
+--- Open a subagent's thread from its parent. Closing it comes back to the parent.
+function T3:openChild(parent_view, child_id)
+    local ok, view = withBusy(_("Loading…"), function()
+        return self.api:thread(child_id, { visit = 1, progress = self:progressParam(),
+            expand = self:expandParam(child_id) })
+    end)
+    if not ok then
+        notify(view)
+        return
+    end
+    self.thread_stack = self.thread_stack or {}
+    table.insert(self.thread_stack, { id = parent_view.id, page = self.viewer and self.viewer:currentPage() })
+    self:showThread(view)
+end
+
+--- After closing a subagent thread, reopen the thread it came from.
+--- Returns true if it did.
+function T3:returnToParent(view)
+    local stack = self.thread_stack or {}
+    local parent = table.remove(stack)
+    if not parent and type(view.parent) == "table" and str(view.parent.id) then
+        parent = { id = view.parent.id } -- opened some other way: still go up a level
+    end
+    if not parent then return false end
+    UIManager:nextTick(function() self:openThread(parent.id, parent.page) end)
+    return true
 end
 
 function T3:reloadThread(id, page)
@@ -518,8 +561,14 @@ function T3:scheduleThreadPoll()
                 self:expandParam(view.id))
             if self.view ~= view then return end
             if ok and body.changed == true then
-                self:showThread(body, { update = true })
-                return
+                if self.typing then
+                    -- Don't draw over the text box; show it when the box closes.
+                    self.held_view = body
+                    view.v = body.v
+                else
+                    self:showThread(body, { update = true })
+                    return
+                end
             end
         end
         self:scheduleThreadPoll()
@@ -556,36 +605,108 @@ function T3:typeReply(view)
     local p = type(view.pending) == "table" and view.pending or nil
     local title = _("Reply")
     if typed == "answer" and p then title = str(p.text) or _("Answer") end
-    local dialog
-    dialog = InputDialog:new{
+    self:compose{
         title = title,
+        hint = typed == "answer" and _("Your answer") or _("Message"),
+        send_text = _("Send"),
+        on_send = function(text)
+            local ok, result = withBusy(_("Sending…"), function()
+                return self.api:reply(view.id, nil, text, self:showProgress(), self:expandList(view.id))
+            end)
+            if ok then
+                self:showThread(result, { update = true, page = math.huge })
+            else
+                notify(result)
+            end
+        end,
+    }
+end
+
+--- A text box that grows with its text (up to the space above the keyboard, then it
+--- scrolls). While it's open, background checks don't redraw anything over it.
+function T3:compose(o)
+    local dialog
+    local function grow()
+        -- KOReader sizes the box to its text only when it's built, so rebuild it at the
+        -- new size. Like InputDialog:reinit(), minus its full-screen flash.
+        dialog._t3_rebuilding = true
+        local visible = dialog:isKeyboardVisible()
+        dialog.input = dialog:getInputText()
+        dialog:onClose() -- remembers the cursor position for init()
+        dialog._input_widget:onCloseWidget()
+        dialog:free()
+        dialog.text_height = nil -- let init() measure the text again
+        dialog.keyboard_visible = visible and true or false
+        dialog:init()
+        if dialog.keyboard_visible then dialog:onShowKeyboard() end
+        dialog._t3_rebuilding = nil
+        UIManager:setDirty("all", "ui")
+    end
+    dialog = InputDialog:new{
+        title = o.title,
         input = "",
-        input_hint = typed == "answer" and _("Your answer") or _("Message"),
+        input_hint = o.hint,
         allow_newline = true,
+        strike_callback = function()
+            if not dialog or dialog._t3_rebuilding or dialog._t3_check_queued then return end
+            dialog._t3_check_queued = true
+            UIManager:nextTick(function()
+                dialog._t3_check_queued = nil
+                -- Wrapped line counts of the text box: all lines vs. the lines that fit.
+                local function counts()
+                    local w = dialog._input_widget and dialog._input_widget.text_widget
+                    local inner = w and (w.text_widget or w)
+                    if not inner or not inner.getAllLineCount or not inner.getVisLineCount then return end
+                    return inner:getAllLineCount(), inner:getVisLineCount()
+                end
+                local all, visible = counts()
+                if not all then return end
+                if all > visible and not dialog._t3_full then
+                    grow()
+                    local a2, v2 = counts()
+                    -- Still more lines than fit: it's as tall as the screen allows; scroll now.
+                    dialog._t3_full = a2 and a2 > v2 or nil
+                elseif all < visible then
+                    dialog._t3_full = nil
+                    grow() -- shrink back after deleting lines
+                end
+            end)
+        end,
         buttons = {{
             { text = _("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
             {
-                text = _("Send"),
+                text = o.send_text,
                 is_enter_default = true,
                 callback = function()
                     local text = dialog:getInputText()
                     if not text:match("%S") then return end
                     UIManager:close(dialog)
-                    local ok, result = withBusy(_("Sending…"), function()
-                        return self.api:reply(view.id, nil, text, self:showProgress(),
-                            self:expandList(view.id))
-                    end)
-                    if ok then
-                        self:showThread(result, { update = true, page = math.huge })
-                    else
-                        notify(result)
-                    end
+                    o.on_send(text)
                 end,
             },
         }},
     }
+    dialog.onCloseWidget = function(d)
+        InputDialog.onCloseWidget(d)
+        self:endTyping()
+    end
+    self.typing = true
     UIManager:show(dialog)
     dialog:onShowKeyboard()
+end
+
+--- The text box closed: show any thread update that arrived while it was open.
+function T3:endTyping()
+    self.typing = false
+    local held = self.held_view
+    self.held_view = nil
+    if held and self.view and held.id == self.view.id then
+        UIManager:nextTick(function()
+            if self.view and held.id == self.view.id and not self.typing then
+                self:showThread(held, { update = true })
+            end
+        end)
+    end
 end
 
 function T3:showOlder(view, before)
@@ -648,35 +769,21 @@ function T3:chooseProject()
 end
 
 function T3:newThread(project)
-    local dialog
-    dialog = InputDialog:new{
+    self:compose{
         title = T(_("New thread in %1"), str(project.title) or ""),
-        input = "",
-        input_hint = _("What should the agent do?"),
-        allow_newline = true,
-        buttons = {{
-            { text = _("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
-            {
-                text = _("Start"),
-                is_enter_default = true,
-                callback = function()
-                    local text = dialog:getInputText()
-                    if not text:match("%S") then return end
-                    UIManager:close(dialog)
-                    local ok, view = withBusy(_("Starting…"), function()
-                        return self.api:startThread(project.id, text)
-                    end)
-                    if ok then
-                        self:showThread(view)
-                    else
-                        notify(view)
-                    end
-                end,
-            },
-        }},
+        hint = _("What should the agent do?"),
+        send_text = _("Start"),
+        on_send = function(text)
+            local ok, view = withBusy(_("Starting…"), function()
+                return self.api:startThread(project.id, text)
+            end)
+            if ok then
+                self:showThread(view)
+            else
+                notify(view)
+            end
+        end,
     }
-    UIManager:show(dialog)
-    dialog:onShowKeyboard()
 end
 
 function T3:onCloseWidget()

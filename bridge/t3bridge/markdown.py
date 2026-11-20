@@ -29,6 +29,9 @@ def inline(text: str) -> str:
 
     text = re.sub(r"`([^`\n]+)`", stash, text)
     text = html.escape(text, quote=False)
+    # ![alt](src): images can't be shown; say what was there.
+    text = re.sub(r"!\[([^\]]*)\]\((?:[^()\s]|\([^()]*\))+\)",
+                  lambda m: f"<i>[image{': ' + m.group(1) if m.group(1) else ''}]</i>", text)
     # [label](url): keep the label, drop the URL (links can't be followed on the device).
     text = re.sub(r"\[([^\]]+)\]\((?:[^()\s]|\([^()]*\))+\)", r"<u>\1</u>", text)
     text = re.sub(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1", r"<b>\2</b>", text)

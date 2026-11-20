@@ -39,8 +39,11 @@ returns immediately if anything visible changed.
 
 ### `GET /v1/threads?limit=8&project=<id>`
 
-Threads grouped by project, most recently active project first. Subagent and
-child threads are hidden for now.
+Threads grouped by project, most recently active project first. Threads an agent
+started under another thread (subagents) aren't listed; they're reached through
+their parent, as in the desktop sidebar. Forks you made are listed normally. A
+parent's row carries `agents: {total, needs_you, working}` so the list can show
+when one of its subagents needs attention.
 
 ```json
 {"v": 262, "projects": [
@@ -84,7 +87,12 @@ Same body as the list, plus `"changed": true|false`.
   questions stay visible. The turn that's still running is never folded. The fold's
   `html` is a link to `t3:run:<run>`. Pass `expand=<run>,<run>` (in the reply body:
   `"expand": [...]`) to show those turns' steps, with the fold shown open ("▾").
-- `entries`: `role` is `you | agent | tool | note | fold`. A `tool` entry is one line covering
+- `entries`: `role` is `you | agent | tool | note | fold | subagent`.
+- A `subagent` entry is one line per subagent ("Agent: <task> · <state>", with the
+  subagent thread's live state). When its thread exists, the entry has `thread` (its id)
+  and its `html` links to `t3:thread:<id>`. A subagent that's still working stays
+  visible when its turn folds.
+- A subagent thread's view has `parent: {id, title}`; top-level threads have `parent: null`. A `tool` entry is one line covering
   a run of consecutive tool calls. `note` covers notifications, errors, questions and
   their answers, and messages sent by agents rather than you.
 - Default window: everything from the `turns`-th most recent message of yours.

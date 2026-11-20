@@ -120,6 +120,10 @@ class MarkdownTests(unittest.TestCase):
                          "<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>"
                          "<pre>x &lt; y</pre>")
 
+    def test_images_become_placeholders(self):
+        from t3bridge.markdown import to_html
+        self.assertEqual(to_html("![tile lattice](/tmp/x.png)"), "<p><i>[image: tile lattice]</i></p>")
+
     def test_entries_carry_html(self):
         e = render.render_items([item(1, "assistant_message", text="**Hi** <there>", streaming=False)])
         self.assertEqual(e[0]["html"], "<p><b>Hi</b> &lt;there&gt;</p>")
@@ -210,7 +214,15 @@ class BridgeTests(unittest.TestCase):
         self.t3.threads["t1"] = thread("t1", itemCount=8, updatedAt="2026-01-03T00:00:00Z")
         self.t3.items["t1"] = list(CONVERSATION)
         self.t3.threads["t2"] = thread("t2", "p2", status="running", updatedAt="2026-01-04T00:00:00Z")
-        self.t3.threads["child"] = thread("child", lineage={"parentThreadId": "t1"})
+        self.t3.threads["boss"] = thread("boss", status="running", itemCount=2)
+        self.t3.items["boss"] = [
+            item(1, "user_message", runId="r9", text="Delegate it", createdBy="user"),
+            item(2, "subagent", runId="r9", title="Research the API", childThreadId="child",
+                 status="running", prompt="Look things up")]
+        self.t3.threads["child"] = thread("child", createdBy="agent", status="running",
+                                          lineage={"parentThreadId": "boss", "relationshipToParent": "subagent"})
+        self.t3.threads["fork"] = thread("fork", createdBy="user",
+                                         lineage={"parentThreadId": "t1", "relationshipToParent": "fork"})
         self.sug = FakeSuggester()
         self.b = Bridge(self.t3, self.sug)
         self.b.settle_delay = 0
@@ -227,6 +239,33 @@ class BridgeTests(unittest.TestCase):
         ids = [t["id"] for p in out["projects"] for t in p["threads"]]
         self.assertNotIn(render.short_id("child"), ids)
         self.assertEqual(out["projects"][0]["threads"][0]["state"], "working")
+
+    def test_subagents_nest_under_parent_and_forks_list(self):
+        rows = {t["id"]: t for p in self.b.thread_list()["projects"] for t in p["threads"]}
+        self.assertNotIn(render.short_id("child"), rows)
+        self.assertIn(render.short_id("fork"), rows)
+        self.assertEqual(rows[render.short_id("boss")]["agents"], {"total": 1, "needs_you": 0, "working": 1})
+        self.assertNotIn("agents", rows[self.s1])
+
+    def test_subagent_line_links_to_child_and_back(self):
+        boss = render.short_id("boss")
+        v = self.b.thread_view(boss)
+        line = v["entries"][-1]
+        self.assertEqual((line["role"], line["text"], line["thread"]),
+                         ("subagent", "Agent: Research the API · working", render.short_id("child")))
+        self.assertIn('href="t3:thread:', line["html"])
+        child = self.b.thread_view(render.short_id("child"))
+        self.assertEqual(child["parent"], {"id": boss, "title": "Thread boss"})
+        self.assertIsNone(self.b.thread_view(self.s1)["parent"])
+
+    def test_child_change_wakes_parent_view(self):
+        boss = render.short_id("boss")
+        v = self.b.thread_view(boss, progress=True)["v"]
+        self.t3.threads["child"] = dict(self.t3.threads["child"], status="completed", itemCount=5)
+        self.b.refresh()
+        changed, view = self.b.wait_view(boss, v, timeout=0.5, progress=True)
+        self.assertTrue(changed)
+        self.assertEqual(view["entries"][-1]["text"], "Agent: Research the API · done")
 
     def test_view_window_and_after(self):
         v = self.b.thread_view(self.s1, turns=1)

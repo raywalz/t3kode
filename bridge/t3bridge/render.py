@@ -156,8 +156,6 @@ def describe_tool(item: dict) -> tuple[str, list[str]] | None:
         return "searched", ["the web"]
     if kind == "file_search":
         return "searched", ["files"]
-    if kind == "subagent":
-        return "delegated", ["a task"]
     if kind == "dynamic_tool":
         name = item.get("toolName") or "a tool"
         args = item.get("input") if isinstance(item.get("input"), dict) else {}
@@ -240,8 +238,10 @@ def _note(item: dict) -> str | None:
     return None
 
 
-_TOOL_KINDS = {"command_execution", "file_change", "web_search", "file_search", "subagent",
-               "dynamic_tool"}
+_TOOL_KINDS = {"command_execution", "file_change", "web_search", "file_search", "dynamic_tool"}
+# Subagents get their own line (and a link to their thread), not a tool-run summary.
+_FOLDABLE_AFTER_REPLY = _TOOL_KINDS | {"subagent"}
+_SUBAGENT_DONE = {"completed", "failed", "cancelled", "interrupted"}
 _SILENT = {"reasoning", "checkpoint", "todo_list", "compaction", "thread_created", "fork",
            "run_interrupt_request"}
 
@@ -302,7 +302,9 @@ def fold_runs(items: list[dict], live_run: str | None = None,
             kind = it.get("type")
             if n == terminal or kind in _KEEP_WHEN_FOLDED or kind in _SILENT:
                 continue
-            if terminal is not None and n > terminal and kind not in _TOOL_KINDS:
+            if kind == "subagent" and it.get("status") not in _SUBAGENT_DONE:
+                continue  # a subagent still working stays visible, as in the web UI
+            if terminal is not None and n > terminal and kind not in _FOLDABLE_AFTER_REPLY:
                 continue  # notes after the final reply stay visible
             hidden.add(n)
         if not hidden:
@@ -326,8 +328,31 @@ def fold_runs(items: list[dict], live_run: str | None = None,
     return out
 
 
-def render_items(items: list[dict]) -> list[dict]:
-    """Turn items → entries [{o, role: you|agent|tool|note, text}], tool runs collapsed.
+_SUBAGENT_STATE = {"completed": "done", "failed": "failed", "cancelled": "stopped",
+                   "interrupted": "stopped", "running": "working", "pending": "starting"}
+
+
+def _subagent_entry(item: dict, child_info) -> dict:
+    """A subagent's line: its task and state, linked to its thread when it has one.
+    `child_info(long id)` → (short id, state) for threads the bridge knows, else None."""
+    title = item.get("title") or (item.get("prompt") or "").strip().split("\n")[0][:80] or "Subagent"
+    child = item.get("childThreadId")
+    info = child_info(child) if (child and child_info) else None
+    state = info[1] if info else _SUBAGENT_STATE.get(item.get("status"), item.get("status") or "")
+    label = {"needs_you": "needs you", "idle": "done"}.get(state, state)
+    text = f"Agent: {title}" + (f" · {label}" if label else "")
+    body = html.escape(text)
+    entry = {"o": item.get("ordinal", 0), "role": "subagent", "text": text, "state": state}
+    if info:
+        entry["thread"] = info[0]
+        body = f'<a href="t3:thread:{info[0]}">{body} ›</a>'
+    entry["html"] = f"<p>{body}</p>"
+    return entry
+
+
+def render_items(items: list[dict], child_info=None) -> list[dict]:
+    """Turn items → entries [{o, role: you|agent|tool|note|subagent|fold, text, html}],
+    tool runs collapsed. `child_info` resolves subagent threads (see _subagent_entry).
 
     `o` is the ordinal of the entry's last item, so `o > cursor` finds new entries.
     In-progress assistant text is left out; it appears once it finishes.
@@ -353,6 +378,10 @@ def render_items(items: list[dict]) -> list[dict]:
             entries.append({"o": o, "role": "fold", "run": item["run"], "expanded": item["expanded"],
                             "text": text,
                             "html": f'<p><a href="t3:run:{item["run"]}">{html.escape(text)}</a></p>'})
+            continue
+        if kind == "subagent":
+            flush()
+            entries.append(_subagent_entry(item, child_info))
             continue
         if kind in _TOOL_KINDS:
             tool = describe_tool(item)

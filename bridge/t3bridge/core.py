@@ -84,6 +84,15 @@ def _content_version(body: dict, progress: bool) -> str:
     return hashlib.sha1(raw).hexdigest()[:12]
 
 
+def _is_subagent(t: dict) -> bool:
+    """Threads an agent started under another thread. They live under their parent,
+    as in the desktop sidebar. Forks the user made are ordinary threads."""
+    lineage = t.get("lineage") or {}
+    if not lineage.get("parentThreadId"):
+        return False
+    return lineage.get("relationshipToParent") == "subagent" or t.get("createdBy") == "agent"
+
+
 class Bridge:
     def __init__(self, client, suggester=None, *, poll_fast: float = 2.0, poll_slow: float = 20.0):
         self.client = client
@@ -150,6 +159,10 @@ class Bridge:
                     self.sigs[tid] = sig
                     self.seq += 1
                     self.thread_pv[tid] = self.seq
+                    # A subagent's change can change its parent's view (its line shows its state).
+                    parent = (t.get("lineage") or {}).get("parentThreadId")
+                    if parent:
+                        self.thread_pv[parent] = self.seq
                     progressed = True
                 key = _wake_key(t)
                 if self.wake_keys.get(tid) != key:
@@ -187,7 +200,15 @@ class Bridge:
         self.thread_pv[tid] = self.seq
 
     def _top_level(self, t: dict) -> bool:
-        return not (t.get("lineage") or {}).get("parentThreadId")
+        return not _is_subagent(t)
+
+    def _children(self, tid: str) -> list[dict]:
+        return [c for c in self.threads.values()
+                if (c.get("lineage") or {}).get("parentThreadId") == tid and _is_subagent(c)]
+
+    def _child_info(self, long_id: str):
+        t = self.threads.get(long_id)
+        return (render.short_id(long_id), render.thread_state(t)) if t else None
 
     def _recent_per_project(self, n: int) -> list[str]:
         groups: dict = {}
@@ -258,8 +279,8 @@ class Bridge:
         projects = {p["id"]: p for p in shell["projects"]}
         groups: dict[str | None, list[dict]] = {}
         for t in self.threads.values():
-            if (t.get("lineage") or {}).get("parentThreadId"):
-                continue  # subagent and child threads: not shown yet
+            if _is_subagent(t):
+                continue  # reached through their parent thread
             groups.setdefault(t.get("projectId"), []).append(t)
         if project is not None:
             pid = self.by_short.get(project)
@@ -282,9 +303,15 @@ class Bridge:
         cached = self.entries.get(t["id"])
         lvm = (t.get("latestVisibleMessage") or {}).get("text")
         prev = render.preview(cached[2]) if cached else (" ".join(lvm.split())[:80] if lvm else "")
-        return {"id": render.short_id(t["id"]), "title": t.get("title") or "Untitled",
-                "state": render.thread_state(t), "unread": render.is_unread(t),
-                "updated": t.get("updatedAt"), "preview": prev}
+        row = {"id": render.short_id(t["id"]), "title": t.get("title") or "Untitled",
+               "state": render.thread_state(t), "unread": render.is_unread(t),
+               "updated": t.get("updatedAt"), "preview": prev}
+        # Surface subagents that need attention on their parent's row.
+        states = [render.thread_state(c) for c in self._children(t["id"])]
+        if states:
+            row["agents"] = {"total": len(states), "needs_you": states.count("needs_you"),
+                             "working": states.count("working")}
+        return row
 
     def projects(self) -> dict:
         shell = self.shell or {"projects": []}
@@ -307,7 +334,8 @@ class Bridge:
         if state in ("working", "needs_you"):
             live_run = t.get("activeRunId") or next(
                 (it.get("runId") for it in reversed(items) if it.get("runId")), None)
-        entries = render.render_items(render.fold_runs(items, live_run, frozenset(expand)))
+        entries = render.render_items(render.fold_runs(items, live_run, frozenset(expand)),
+                                      child_info=self._child_info)
 
         if after is not None:
             shown = [e for e in entries if e["o"] > after]
@@ -329,8 +357,11 @@ class Bridge:
                 log.warning("visit failed: %s", e)
 
         pending_view, replies, typed = self._replies(t, state, cursor)
+        parent = self.threads.get((t.get("lineage") or {}).get("parentThreadId") or "")
         body = {
             "id": short, "title": t.get("title") or "Untitled", "state": state,
+            "parent": ({"id": render.short_id(parent["id"]), "title": parent.get("title") or "Untitled"}
+                       if parent and _is_subagent(t) else None),
             "cursor": cursor, "more_before": more_before, "entries": shown,
             "pending": pending_view, "replies": replies, "typed": typed,
         }
@@ -396,7 +427,7 @@ class Bridge:
 
     def _wants_suggestions(self, tid: str) -> bool:
         t = self.threads.get(tid)
-        return bool(self.suggester and t and not (t.get("lineage") or {}).get("parentThreadId"))
+        return bool(self.suggester and t and self._top_level(t))
 
     def _schedule_suggestions(self, tid: str) -> dict | None:
         t = self.threads.get(tid)
