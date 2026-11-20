@@ -73,10 +73,34 @@ Same body as the list, plus `"changed": true|false`.
 
 `{"projects": [{"id", "title"}]}`, for choosing where a new thread goes.
 
+### `GET /v1/models?thread=<id>` or `?project=<id>`
+
+The models to choose from, as in the desktop's model picker:
+
+```json
+{"current": "q3k2m7xa", "current_label": "GPT-6.2",
+ "favorites": [{"id": "q3k2m7xa", "label": "GPT-6.2"}, ...],
+ "groups": [{"title": "Codex", "models": [{"id": "...", "label": "GPT-6.2-Sol"}]}, ...]}
+```
+
+`favorites` are the models starred in T3, in T3's order. `groups` holds every other
+model, under its provider's name, leaving out models hidden in T3's settings, legacy
+models, and providers that are disabled or failing. A model offered by two providers
+(say, a personal and a work account) has the provider in its favorite label. `current` is the
+thread's model, or with `project`, the one a new thread there would get (see
+`POST /v1/threads`). Model ids are short and stable, like thread ids.
+
+### `POST /v1/threads/<id>/model`
+
+`{"model": "<id from /v1/models>", "client_msg_id": "..."}` switches the thread's model
+(and provider, if it differs), as the app's model picker does. The thread's next turn
+uses it. Returns the new thread view. Choosing the current model changes nothing.
+
 ### `GET /v1/threads/<id>?turns=3&after=<cursor>&before=<cursor>&visit=1&progress=1`
 
 ```json
-{"id": "jqlcag76", "title": "Fix login", "state": "done", "v": 264, "cursor": 1000005,
+{"id": "jqlcag76", "title": "Fix login", "state": "done", "model": "GPT-6.2",
+ "v": 264, "cursor": 1000005,
  "more_before": true,
  "entries": [
    {"o": 1000001, "role": "you", "text": "Why does login fail?", "html": "<p>Why does login fail?</p>"},
@@ -192,6 +216,9 @@ Returns the new thread view.
 ```json
 {"project": "k3x9a2bq", "text": "Fix the flaky login test", "client_msg_id": "..."}
 ```
+
+Optional `"model": "<id from /v1/models>"` picks the model; the rest still comes from
+your settings.
 
 Starts a thread and returns its view. The thread uses your own T3 settings, as a
 new thread in the app would: the model, permission mode and workspace come from

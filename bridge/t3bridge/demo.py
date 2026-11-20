@@ -141,7 +141,16 @@ class DemoT3:
 
     def server_config(self):
         return {"settings": {"defaultRuntimeMode": "approval-required",
-                             "defaultModelSelection": {"instanceId": "demo", "model": "demo"}}}
+                             "defaultModelSelection": {"instanceId": "demo", "model": "demo"},
+                             "favorites": [{"provider": "demo", "model": "demo"}]},
+                "providers": [{"instanceId": "demo", "displayName": "Demo", "status": "ready",
+                               "models": [{"slug": "demo", "name": "Demo model"},
+                                          {"slug": "demo-fast", "name": "Demo fast"}]}]}
+
+    def set_model(self, tid, sel, **_kw):
+        with self.lock:
+            self.threads[tid]["modelSelection"] = sel
+        return {"sequence": 1}
 
     def shell_snapshot(self):
         with self.lock:
@@ -238,7 +247,8 @@ class DemoT3:
                                  "createdBy": "user", "createdAt": _ts(0), "updatedAt": _ts(0),
                                  "latestRunCompletedAt": None, "lastVisitedAt": _ts(0), "itemCount": 0,
                                  "pendingRuntimeRequest": None, "lineage": {"parentThreadId": None},
-                                 "activeRunId": "run-new", "runtimeMode": "approval-required"}
+                                 "activeRunId": "run-new", "runtimeMode": "approval-required",
+                                 "modelSelection": model}
             self._add(tid, "user_message", text=text)
         self._work_then_reply(tid, "Started on it. (Demo bridge: this reply is canned.)")
         return {"threadId": tid}

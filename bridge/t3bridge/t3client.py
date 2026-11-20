@@ -226,6 +226,11 @@ class T3Client:
             }
         )
 
+    def set_model(self, thread_id: str, model_selection: dict, command_id: str | None = None) -> dict:
+        """Switch the thread's model (and provider), as the app's model picker does."""
+        return self.dispatch({"type": "thread.model-selection.set", "commandId": command_id or new_id(),
+                              "threadId": thread_id, "modelSelection": model_selection})
+
     def delete_thread(self, thread_id: str) -> dict:
         return self.dispatch({"type": "thread.delete", "threadId": thread_id})
 

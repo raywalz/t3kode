@@ -173,9 +173,21 @@ function Api:settle(id, settled)
     return self:requestWithRetry("POST", "/v1/threads/" .. id .. "/settle", nil, { settled = settled })
 end
 
-function Api:startThread(project_id, text)
+--- `model`: an id from Api:models(), or nil for the project's default.
+function Api:startThread(project_id, text, model)
     return self:requestWithRetry("POST", "/v1/threads", nil, {
-        project = project_id, text = text, client_msg_id = Api.newMessageId(),
+        project = project_id, text = text, model = model, client_msg_id = Api.newMessageId(),
+    })
+end
+
+--- Models to choose from, for a thread (`{thread = id}`) or a new one (`{project = id}`).
+function Api:models(params)
+    return self:request("GET", "/v1/models", params)
+end
+
+function Api:setModel(id, model, progress)
+    return self:requestWithRetry("POST", "/v1/threads/" .. id .. "/model", nil, {
+        model = model, client_msg_id = Api.newMessageId(), progress = progress or nil,
     })
 end
 

@@ -195,6 +195,11 @@ tap can't send twice.
   for the active run.
 - Mark read: `{"type": "thread.visit", "threadId", "visitedAt": <ISO time>, "opened": true}`
   moves the read watermark (`lastVisitedAt` in the shell), the same as opening the thread in the app.
+- Switch model: `{"type": "thread.model-selection.set", "threadId", "modelSelection": {"instanceId", "model"}}`,
+  what the app's picker sends. It can change provider too. Verified live (Haiku → Sonnet).
+  The models come from `server.getConfig`: `providers[].models[]` (`slug`, `name`, `isLegacy`),
+  plus `settings.favorites` (`[{provider, model}]`, `provider` being the instance id) and
+  `settings.providerModelPreferences[<instance>].hiddenModels`.
 - Delete (test cleanup only): `{"type": "thread.delete", "threadId"}`.
 
 ### What `creationSource` does

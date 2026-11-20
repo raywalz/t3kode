@@ -30,6 +30,9 @@ Status: experimental, but in daily use on a Kobo Clara BW.
   answers them. After each turn, a small model suggests a few likely replies; the
   Reply button offers them, with Type… below. Typed replies use a box that grows
   with the text.
+- **Model picker:** a thread's Model button switches the model its next turn uses, and
+  a new thread can start on any model. Your T3 favorites come first, then More models…
+  for the rest (minus the ones you've hidden in T3).
 - **E-ink friendly updates:** the screen redraws only when what it shows changes, without
   a full-screen flash. Optionally, follow a turn's steps as they happen.
 - **Reconnects** cleanly when the device wakes up, and a retried tap is never sent twice.

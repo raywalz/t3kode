@@ -38,6 +38,7 @@ APPROVAL_BUTTONS = [("accept", "Allow"), ("acceptForSession", "Allow for session
 SUGGESTION_WAIT = 12.0  # seconds a thread view waits for suggestions already being generated
 SUGGESTION_RETRY = 30.0  # seconds before a failed generation is tried again
 DEVICE_ACTIVE_WINDOW = 120.0  # poll fast for this long after the last device request
+CONFIG_TTL = 30.0  # seconds T3's server config (models, settings) is reused
 
 _ID_NAMESPACE = uuid.UUID("6b0f7c52-7d0e-4c55-9a43-2a3c1f0b9e11")
 
@@ -72,14 +73,16 @@ def _wake_key(t: dict) -> tuple:
     don't count: no live streaming on e-ink."""
     state = render.thread_state(t)
     pending = (t.get("pendingRuntimeRequest") or {}).get("id")
+    model = t.get("modelSelection") or {}
     return (state, pending, t.get("title"), render.is_unread(t), t.get("settledOverride"),
-            None if state == "working" else t.get("itemCount"))
+            None if state == "working" else t.get("itemCount"),
+            model.get("instanceId"), model.get("model"))
 
 
 def _content_version(body: dict, progress: bool) -> str:
     """Fingerprint of what the device would draw. Without `progress`, a working thread's
     steps are left out, so new steps don't count as a change until the turn ends."""
-    shown = {k: body[k] for k in ("title", "state", "more_before", "pending", "replies", "typed")}
+    shown = {k: body[k] for k in ("title", "state", "model", "more_before", "pending", "replies", "typed")}
     if progress or body["state"] != "working":
         shown["entries"] = [(e["role"], e["text"], e.get("expanded")) for e in body["entries"]]
     raw = json.dumps(shown, sort_keys=True, ensure_ascii=False).encode()
@@ -146,6 +149,7 @@ class Bridge:
         self.multi_picks: dict[tuple, list[str]] = {}  # (request id, question id) -> ticked labels
         self.done_requests: OrderedDict[str, dict] = OrderedDict()  # client_msg_id -> response
         self.last_device_at = 0.0
+        self._config: tuple[float, dict] | None = None  # (fetched at, server config)
         self.stop_capability = True
         self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="suggest")
         # Fetches transcripts in the background for list previews (T3's own preview
@@ -422,6 +426,7 @@ class Bridge:
         parent = self.threads.get((t.get("lineage") or {}).get("parentThreadId") or "")
         body = {
             "id": short, "title": t.get("title") or "Untitled", "state": state,
+            "model": self._model_label(t.get("modelSelection")),
             "parent": ({"id": render.short_id(parent["id"]), "title": parent.get("title") or "Untitled"}
                        if parent and _is_subagent(t) else None),
             "cursor": cursor, "more_before": more_before, "entries": shown,
@@ -807,12 +812,14 @@ class Bridge:
         elif t.get("activeRunId"):
             self.client.interrupt_run(t["id"], t["activeRunId"], command_id=_stable_id(cmid, "c"))
 
-    def new_thread_settings(self, pid: str, project: dict) -> tuple[dict, str, dict | None]:
+    def new_thread_settings(self, pid: str, project: dict,
+                            workspace: bool = True) -> tuple[dict, str, dict | None]:
         """(model selection, runtime mode, workspace strategy) for a new thread, from the
         user's T3 settings, the way the app picks them: the project's override, then the
         server-wide default. Read fresh each time so a change made on the desktop applies
-        at once. The workspace is None for the project root."""
-        settings = (self.client.server_config().get("settings") or {})
+        at once. The workspace is None for the project root, or when `workspace` is False
+        (only the model and mode are wanted)."""
+        settings = self._server_config(fresh=True).get("settings") or {}
         override = (settings.get("projectSettingsOverrides") or {}).get(pid) or {}
         model = (override.get("defaultModelSelection") or project.get("defaultModelSelection")
                  or settings.get("defaultModelSelection") or settings.get("fallbackModelSelection"))
@@ -828,10 +835,10 @@ class Bridge:
         runtime = override.get("defaultRuntimeMode") or settings.get("defaultRuntimeMode") or "full-access"
         env_mode = (override.get("defaultThreadEnvMode") or project.get("defaultThreadEnvMode")
                     or settings.get("defaultThreadEnvMode") or "local")
-        workspace = None
-        if env_mode == "worktree":
-            workspace = self._new_worktree(project, settings.get("newWorktreesStartFromOrigin", True))
-        return model, runtime, workspace
+        strategy = None
+        if workspace and env_mode == "worktree":
+            strategy = self._new_worktree(project, settings.get("newWorktreesStartFromOrigin", True))
+        return model, runtime, strategy
 
     def _new_worktree(self, project: dict, start_from_origin: bool) -> dict | None:
         """A new worktree from the branch the project's checkout is on, as the app does.
@@ -861,7 +868,9 @@ class Bridge:
             time.sleep(self.settle_delay)
         return {"ok": True, "settled": _is_settled(self.threads.get(t["id"], {}))}
 
-    def start_thread(self, project: str, text: str, client_msg_id: str | None = None) -> dict:
+    def start_thread(self, project: str, text: str, client_msg_id: str | None = None,
+                     model: str | None = None) -> dict:
+        """`model`: an id from /v1/models; None uses the thread default from T3's settings."""
         self.last_device_at = time.monotonic()
         pid = self.by_short.get(project)
         shell = self.shell or {"projects": []}
@@ -872,9 +881,10 @@ class Bridge:
             raise BridgeError(400, "text is empty")
 
         def act():
-            model, runtime, workspace = self.new_thread_settings(pid, p)
+            default, runtime, workspace = self.new_thread_settings(pid, p)
+            chosen = self._resolve_model(model) if model else default
             title = " ".join(text.split())[:60]
-            res = self.client.launch_thread(pid, title, text.strip(), model, runtime_mode=runtime,
+            res = self.client.launch_thread(pid, title, text.strip(), chosen, runtime_mode=runtime,
                                             command_id=_stable_id(client_msg_id, "c"),
                                             message_id=_stable_id(client_msg_id, "m"),
                                             generate_title=True, workspace=workspace)
@@ -882,3 +892,120 @@ class Bridge:
             return self.thread_view(render.short_id(res["threadId"]))
 
         return self._once(client_msg_id, act)
+
+    # ---- models -------------------------------------------------------------
+
+    def _server_config(self, fresh: bool = False) -> dict:
+        """T3's server config (providers with their models, the user's settings), reused
+        for CONFIG_TTL seconds. `fresh`: always fetch, for a decision that must follow a
+        setting changed on the desktop a moment ago."""
+        now = time.monotonic()
+        if fresh or self._config is None or now - self._config[0] > CONFIG_TTL:
+            self._config = (now, self.client.server_config() or {})
+        return self._config[1]
+
+    def _catalog(self) -> list[dict]:
+        """Every model of every provider instance, in T3's order:
+        {id, label, group, sel, hidden, legacy}. `sel` is T3's model selection."""
+        config = self._server_config()
+        prefs = (config.get("settings") or {}).get("providerModelPreferences") or {}
+        out = []
+        for p in config.get("providers") or []:
+            inst = p.get("instanceId")
+            if not inst:
+                continue
+            usable = p.get("enabled", True) and p.get("installed", True) and \
+                p.get("status") not in ("disabled", "error")
+            hidden = set((prefs.get(inst) or {}).get("hiddenModels") or [])
+            for m in p.get("models") or []:
+                slug = m.get("slug")
+                if not slug:
+                    continue
+                out.append({"id": _model_id(inst, slug), "label": m.get("name") or slug,
+                            "group": p.get("displayName") or inst,
+                            "sel": {"instanceId": inst, "model": slug},
+                            "hidden": not usable or slug in hidden, "legacy": bool(m.get("isLegacy"))})
+        return out
+
+    def _model_label(self, sel: dict | None) -> str | None:
+        if not sel or not sel.get("model"):
+            return None
+        mid = _model_id(sel.get("instanceId") or "", sel["model"])
+        try:
+            found = next((m for m in self._catalog() if m["id"] == mid), None)
+        except Exception as e:  # a label isn't worth failing the view for
+            log.warning("model list failed: %s", e)
+            found = None
+        return found["label"] if found else sel["model"]
+
+    def _resolve_model(self, mid: str) -> dict:
+        found = next((m for m in self._catalog() if m["id"] == mid), None)
+        if found is None or found["hidden"]:
+            raise BridgeError(400, "unknown or unavailable model")
+        return dict(found["sel"])
+
+    def models(self, thread: str | None = None, project: str | None = None) -> dict:
+        """The models to choose from: the desktop's favorites, then every other model that
+        isn't hidden or legacy, grouped by provider. `current` is the thread's model, or
+        the one a new thread in `project` would get."""
+        self.last_device_at = time.monotonic()
+        current = None
+        if thread:
+            current = self._thread(thread).get("modelSelection")
+        elif project:
+            pid = self.by_short.get(project)
+            p = next((x for x in (self.shell or {}).get("projects", []) if x["id"] == pid), None)
+            if p is None:
+                raise BridgeError(404, "no such project")
+            current = self.new_thread_settings(pid, p, workspace=False)[0]
+        current_id = _model_id(current.get("instanceId") or "", current.get("model") or "") \
+            if current else None
+        catalog = [m for m in self._catalog() if not m["hidden"]]
+        by_id = {m["id"]: m for m in catalog}
+        settings = self._server_config().get("settings") or {}
+        favorites = []
+        for f in settings.get("favorites") or []:
+            m = by_id.get(_model_id(f.get("instanceId") or f.get("provider") or "", f.get("model") or ""))
+            if m and m not in favorites:
+                favorites.append(m)
+        # The same model under two providers (say, a personal and a work account): say which.
+        names = [m["label"] for m in favorites]
+        groups: dict[str, list[dict]] = {}
+        for m in catalog:
+            if (not m["legacy"] or m["id"] == current_id) and m not in favorites:
+                groups.setdefault(m["group"], []).append({"id": m["id"], "label": m["label"]})
+        return {
+            "current": current_id,
+            "current_label": self._model_label(current),
+            "favorites": [{"id": m["id"], "label": m["label"] if names.count(m["label"]) == 1
+                           else f"{m['label']} · {m['group']}"} for m in favorites],
+            "groups": [{"title": g, "models": ms} for g, ms in groups.items()],
+        }
+
+    def set_model(self, short: str, model: str, client_msg_id: str | None = None,
+                  progress: bool = False) -> dict:
+        """Switch a thread's model, as the app's model picker does. The next turn uses it."""
+        self.last_device_at = time.monotonic()
+        t = self._thread(short)
+
+        def act():
+            sel = self._resolve_model(model)
+            cur = t.get("modelSelection") or {}
+            if (cur.get("instanceId"), cur.get("model")) != (sel["instanceId"], sel["model"]):
+                try:
+                    self.client.set_model(t["id"], sel, command_id=_stable_id(client_msg_id, "c"))
+                except T3Error as e:
+                    raise BridgeError(502, f"T3 refused the model change: {e}") from None
+                for _ in range(6):  # until the shell shows it, so the returned view is right
+                    self.refresh()
+                    now = self.threads.get(t["id"], {}).get("modelSelection") or {}
+                    if (now.get("instanceId"), now.get("model")) == (sel["instanceId"], sel["model"]):
+                        break
+                    time.sleep(self.settle_delay)
+            return self.thread_view(short, progress=progress)
+
+        return self._once(client_msg_id, act)
+
+
+def _model_id(instance: str, slug: str) -> str:
+    return render.short_id(f"model:{instance}:{slug}")

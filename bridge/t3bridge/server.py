@@ -47,12 +47,14 @@ def make_handler(bridge: Bridge, device_token: str):
         ("GET", re.compile(r"^/v1/threads/wait$"), "list_wait"),
         ("POST", re.compile(r"^/v1/threads$"), "start"),
         ("GET", re.compile(r"^/v1/projects$"), "projects"),
+        ("GET", re.compile(r"^/v1/models$"), "models"),
         ("GET", re.compile(r"^/v1/images/(\w+)$"), "image"),
         ("GET", re.compile(r"^/v1/threads/(\w+)$"), "view"),
         ("GET", re.compile(r"^/v1/threads/(\w+)/wait$"), "wait"),
         ("POST", re.compile(r"^/v1/threads/(\w+)/reply$"), "reply"),
         ("POST", re.compile(r"^/v1/threads/(\w+)/settle$"), "settle"),
         ("POST", re.compile(r"^/v1/threads/(\w+)/secret$"), "secret"),
+        ("POST", re.compile(r"^/v1/threads/(\w+)/model$"), "set_model"),
     ]
 
     class Handler(BaseHTTPRequestHandler):
@@ -150,6 +152,16 @@ def make_handler(bridge: Bridge, device_token: str):
         def r_projects(self, q):
             return bridge.projects()
 
+        def r_models(self, q):
+            return bridge.models(thread=q.get("thread", [None])[0], project=q.get("project", [None])[0])
+
+        def r_set_model(self, q, short):
+            b = self._body()
+            if not isinstance(b.get("model"), str):
+                raise BridgeError(400, "send `model`")
+            return bridge.set_model(short, b["model"], client_msg_id=b.get("client_msg_id"),
+                                    progress=bool(b.get("progress")))
+
         def r_view(self, q, short):
             return bridge.thread_view(short, after=_int(q, "after"), before=_int(q, "before"),
                                       turns=_int(q, "turns", 3, 1, 50),
@@ -185,8 +197,10 @@ def make_handler(bridge: Bridge, device_token: str):
 
         def r_start(self, q):
             b = self._body()
+            model = b.get("model")
             return bridge.start_thread(str(b.get("project", "")), str(b.get("text", "")),
-                                       client_msg_id=b.get("client_msg_id"))
+                                       client_msg_id=b.get("client_msg_id"),
+                                       model=model if isinstance(model, str) and model else None)
 
     return Handler
 

@@ -635,6 +635,10 @@ function T3:threadButtons(view)
             callback = function() self:showReplyDialog(view, suggestions, typed ~= "none") end,
         },
         {
+            text = _("Model"),
+            callback = function() self:changeModel(view) end,
+        },
+        {
             text = _("Refresh"),
             callback = function() self:reloadThread(view.id) end,
         },
@@ -818,6 +822,98 @@ function T3:typeReply(view)
     }
 end
 
+-- ---------------------------------------------------------------------------
+-- models
+
+--- Choose a model. `params`: {thread = id} or {project = id}, for the current model.
+--- Shows the desktop's favorites, then "More models…" for the rest; calls
+--- on_pick(id, label) with the choice.
+function T3:pickModel(params, on_pick)
+    local ok, body = withBusy(_("Loading models…"), function() return self.api:models(params) end)
+    if not ok then
+        notify(body)
+        return
+    end
+    local current = str(body.current)
+    local function mark(m)
+        return (m.id == current and "● " or "") .. (str(m.label) or m.id)
+    end
+    local groups = body.groups or {}
+    local favorites = body.favorites or {}
+    if #favorites == 0 then
+        if #groups == 0 then return notify(_("No models available.")) end
+        return self:showAllModels(groups, mark, on_pick)
+    end
+    local dialog
+    local rows = {}
+    for _i, m in ipairs(favorites) do
+        table.insert(rows, {{
+            text = mark(m),
+            callback = function()
+                UIManager:close(dialog)
+                on_pick(m.id, str(m.label))
+            end,
+        }})
+    end
+    if #groups > 0 then
+        table.insert(rows, {{
+            text = _("More models…"),
+            callback = function()
+                UIManager:close(dialog)
+                self:showAllModels(groups, mark, on_pick)
+            end,
+        }})
+    end
+    local title = _("Model")
+    if str(body.current_label) then title = T(_("Model: %1"), body.current_label) end
+    dialog = ButtonDialog:new{ title = title, buttons = rows }
+    UIManager:show(dialog)
+end
+
+--- Every model that isn't a favorite, under its provider's name.
+function T3:showAllModels(groups, mark, on_pick)
+    local menu
+    local items = {}
+    for _i, g in ipairs(groups) do
+        table.insert(items, { text = str(g.title) or "", bold = true })
+        for _j, m in ipairs(g.models or {}) do
+            table.insert(items, {
+                text = "    " .. mark(m),
+                model = m,
+            })
+        end
+    end
+    menu = Menu:new{
+        title = _("Models"),
+        item_table = items,
+        is_borderless = true,
+        is_popout = false,
+        covers_fullscreen = true,
+        close_callback = function() UIManager:close(menu) end,
+    }
+    menu.onMenuSelect = function(_menu, item)
+        if not item.model then return true end -- a provider heading
+        UIManager:close(menu)
+        on_pick(item.model.id, str(item.model.label))
+        return true
+    end
+    UIManager:show(menu)
+end
+
+--- The thread's Model button: switch the model its next turn uses.
+function T3:changeModel(view)
+    self:pickModel({ thread = view.id }, function(model)
+        local ok, result = withBusy(_("Switching model…"), function()
+            return self.api:setModel(view.id, model, self:showProgress())
+        end)
+        if ok then
+            self:showThread(result, { update = true })
+        else
+            notify(result)
+        end
+    end)
+end
+
 --- Ask for the value of a secret request in a masked box. The value goes to the bridge
 --- in one request and isn't kept anywhere on the device.
 function T3:enterSecret(view)
@@ -868,6 +964,22 @@ local COMPOSE_MIN_LINES = 4
 
 function T3:compose(o)
     local dialog
+    -- Cancel, an optional extra button (o.extra), then Send.
+    local row = {
+        { text = _("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
+    }
+    if o.extra then table.insert(row, o.extra) end
+    table.insert(row, {
+        text = o.send_text,
+        is_enter_default = true,
+        callback = function()
+            local text = dialog:getInputText()
+            if not text:match("%S") then return end
+            dialog._t3_sent = true
+            UIManager:close(dialog)
+            o.on_send(text)
+        end,
+    })
     local function textBox()
         local w = dialog._input_widget and dialog._input_widget.text_widget
         local inner = w and (w.text_widget or w)
@@ -926,25 +1038,14 @@ function T3:compose(o)
                 end
             end)
         end,
-        buttons = {{
-            { text = _("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
-            {
-                text = o.send_text,
-                is_enter_default = true,
-                callback = function()
-                    local text = dialog:getInputText()
-                    if not text:match("%S") then return end
-                    dialog._t3_sent = true
-                    UIManager:close(dialog)
-                    o.on_send(text)
-                end,
-            },
-        }},
+        buttons = { row },
     }
     dialog.onCloseWidget = function(d)
         InputDialog.onCloseWidget(d)
+        if self.compose_dialog == d then self.compose_dialog = nil end
         self:endTyping(d._t3_sent)
     end
+    self.compose_dialog = dialog
     -- Start at four lines (sized before it's shown, so it costs no extra redraw).
     rebuild(minHeight(), true)
     self.typing = true
@@ -1024,13 +1125,38 @@ function T3:chooseProject()
 end
 
 function T3:newThread(project)
+    local model -- nil: the project's default model, from T3's settings
+    local extra
+    extra = {
+        text = _("Model"),
+        id = "model",
+        callback = function()
+            -- Put the keyboard away first: while it's up, the first tap on the
+            -- picker only closes it.
+            local dialog = self.compose_dialog
+            if dialog and dialog:isKeyboardVisible() then dialog:onCloseKeyboard() end
+            self:pickModel({ project = project.id }, function(id, label)
+                model = id
+                -- Show the choice on the button, and keep it when the box is rebuilt.
+                extra.text = label or _("Model")
+                dialog = self.compose_dialog
+                local button = dialog and dialog.button_table and dialog.button_table:getButtonById("model")
+                if button then
+                    button:setText(extra.text, button.width)
+                    UIManager:setDirty(dialog, "ui")
+                end
+                if dialog then dialog:onShowKeyboard() end
+            end)
+        end,
+    }
     self:compose{
         title = T(_("New thread in %1"), str(project.title) or ""),
         hint = _("What should the agent do?"),
         send_text = _("Start"),
+        extra = extra,
         on_send = function(text)
             local ok, view = withBusy(_("Starting…"), function()
-                return self.api:startThread(project.id, text)
+                return self.api:startThread(project.id, text, model)
             end)
             if ok then
                 self:showThread(view)

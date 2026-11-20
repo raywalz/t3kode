@@ -41,8 +41,26 @@ class FakeT3:
                 "defaultModelSelection": {"instanceId": "x", "model": "default-model"},
                 "projectSettingsOverrides": {"p2": {"defaultRuntimeMode": "approval-required"}}}
 
+    providers = [
+        {"instanceId": "x", "displayName": "Personal", "enabled": True, "installed": True, "status": "ready",
+         "models": [{"slug": "m", "name": "Model M"}, {"slug": "default-model", "name": "Default"},
+                    {"slug": "old", "name": "Old", "isLegacy": True},
+                    {"slug": "secret", "name": "Hidden"}]},
+        {"instanceId": "y", "displayName": "Work", "enabled": True, "installed": True,
+         "status": "ready", "models": [{"slug": "m", "name": "Model M"}]},
+        {"instanceId": "z", "displayName": "Broken", "enabled": True, "installed": True,
+         "status": "error", "models": [{"slug": "z1", "name": "Z1"}]},
+    ]
+
     def server_config(self):
-        return {"settings": self.settings}
+        return {"settings": {**self.settings,
+                             "favorites": [{"provider": "x", "model": "m"}, {"provider": "y", "model": "m"}],
+                             "providerModelPreferences": {"x": {"hiddenModels": ["secret"]}}},
+                "providers": self.providers}
+
+    def set_model(self, tid, sel, **kw):
+        self.threads[tid] = dict(self.threads[tid], modelSelection=sel)
+        return self._record("set_model", tid, sel, **kw)
 
     def vcs_status(self, cwd):
         return {"isRepo": cwd != "/not-git", "refName": "main"}
@@ -558,6 +576,40 @@ class BridgeTests(unittest.TestCase):
         self.t3.settings["projectSettingsOverrides"]["p2"]["defaultThreadEnvMode"] = "local"
         self.b.start_thread(render.short_id("p2"), "Project says local", client_msg_id="w2")
         self.assertIsNone(self.t3.calls[-1][2]["workspace"])
+
+    def test_models_lists_favorites_then_the_rest(self):
+        out = self.b.models(thread=self.s1)
+        mid = lambda inst, slug: render.short_id(f"model:{inst}:{slug}")
+        self.assertEqual(out["current"], mid("x", "m"))
+        self.assertEqual(out["current_label"], "Model M")
+        # The same model under two providers says which.
+        self.assertEqual([f["label"] for f in out["favorites"]],
+                         ["Model M · Personal", "Model M · Work"])
+        # Favorites aren't repeated; legacy, hidden and broken providers' models are left out.
+        self.assertEqual(out["groups"], [{"title": "Personal", "models": [
+            {"id": mid("x", "default-model"), "label": "Default"}]}])
+        self.assertEqual(self.b.models(project=render.short_id("p1"))["current"], mid("x", "default-model"))
+
+    def test_view_shows_model_and_set_model_switches_it(self):
+        v = self.b.thread_view(self.s1)
+        self.assertEqual(v["model"], "Model M")
+        target = render.short_id("model:x:default-model")
+        out = self.b.set_model(self.s1, target, client_msg_id="sm1")
+        name, args, kw = self.t3.calls[-1]
+        self.assertEqual((name, args[1]), ("set_model", {"instanceId": "x", "model": "default-model"}))
+        self.assertEqual(out["model"], "Default")
+        self.assertNotEqual(out["v"], v["v"])
+        # Choosing the model it already has sends nothing.
+        n = len(self.t3.calls)
+        self.b.set_model(self.s1, target, client_msg_id="sm2")
+        self.assertEqual(len(self.t3.calls), n)
+        with self.assertRaises(BridgeError):
+            self.b.set_model(self.s1, render.short_id("model:x:secret"))
+
+    def test_start_thread_with_chosen_model(self):
+        self.b.start_thread(render.short_id("p1"), "Use M", client_msg_id="cm1",
+                            model=render.short_id("model:y:m"))
+        self.assertEqual(self.t3.calls[-1][1][3], {"instanceId": "y", "model": "m"})
 
 
 class TokenTests(unittest.TestCase):
