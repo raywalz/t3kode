@@ -438,15 +438,11 @@ function T3:listAction(busy_text, fn, done, kind)
 end
 
 --- Hold the title of an open thread: the same menu as holding it in the list. After an
---- action the thread redraws in place; after Archive it closes.
+--- action the thread closes, back to the list (which refreshes on the way).
 function T3:viewActions(view)
-    self:threadActions(view, function(kind)
+    self:threadActions(view, function()
         if not self.view or self.view.id ~= view.id then return end -- closed meanwhile
-        if kind == "archive" then
-            if self.viewer then self.viewer:onClose() end
-        else
-            self:reloadThread(view.id, self.viewer and self.viewer:currentPage() or nil)
-        end
+        if self.viewer then self.viewer:onClose() end
     end)
 end
 
