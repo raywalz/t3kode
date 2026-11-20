@@ -463,6 +463,7 @@ class Bridge:
                 (it.get("runId") for it in reversed(items) if it.get("runId")), None)
         entries = render.render_items(
             render.fold_runs(items, live_run, frozenset(expand)), child_info=self._child_info,
+            expanded=frozenset(expand),
             image_ref=lambda kind, src, alt: self.images.ref(t["id"], kind, src, alt))
 
         if after is not None:

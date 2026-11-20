@@ -23,7 +23,8 @@ Status: experimental, but in daily use on a Kobo Clara BW.
   it, mark it unread, settle it, or archive it, as in the app's thread menu. Hold a project's name to start a new thread in it.
 - **Thread view** that reads well on e-ink: formatted messages (headings, lists,
   tables, code), tool calls collapsed into one-line markers, and finished turns folded
-  into "Worked for 1m 12s" like T3's own apps. Tap a fold to see its steps, or a
+  into "Worked for 1m 12s" like T3's own apps, with the files a turn changed in one
+  line under its reply ("3 files changed · +120 −30"; tap it for the list). Tap a fold to see its steps, or a
   subagent to open its thread. Images in replies and attachments show inline (shrunk
   and grayscale when ImageMagick is installed); tap one to view it full screen.
 - **Replies:** T3's pending approvals (Allow / Allow for session / Decline) and questions

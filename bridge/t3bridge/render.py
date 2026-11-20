@@ -481,7 +481,27 @@ def _subagent_entry(item: dict, child_info) -> dict:
     return entry
 
 
-def render_items(items: list[dict], child_info=None, image_ref=None) -> list[dict]:
+_FILE_KIND = {"added": " (new)", "deleted": " (deleted)", "renamed": " (renamed)"}
+
+
+def changed_files(files: list[dict], open_: bool, key: str) -> tuple[str, str]:
+    """(text, html) for a turn's changed files, as the app's Changed files card: one
+    line, "▸ 3 files changed · +120 −30", that opens into the list. `key` is what
+    the line's link expands (t3:run:<key>)."""
+    adds = sum(f.get("additions") or 0 for f in files)
+    dels = sum(f.get("deletions") or 0 for f in files)
+    n = len(files)
+    head = f"{'▾' if open_ else '▸'} {n} file{'s' if n != 1 else ''} changed · +{adds} −{dels}"
+    lines = [f"{f.get('path', '?')}{_FILE_KIND.get(f.get('kind') or '', '')} "
+             f"+{f.get('additions') or 0} −{f.get('deletions') or 0}" for f in files] if open_ else []
+    text = "\n".join([head] + lines)
+    body = "".join(f"<li>{html.escape(line)}</li>" for line in lines)
+    return text, (f'<div class="files"><p><a href="t3:run:{key}">{html.escape(head)}</a></p>'
+                  + (f"<ul>{body}</ul>" if body else "") + "</div>")
+
+
+def render_items(items: list[dict], child_info=None, image_ref=None,
+                 expanded: frozenset[str] = frozenset()) -> list[dict]:
     """Turn items → entries [{o, role: you|agent|tool|note|subagent|fold, text, html}],
     tool runs collapsed. `child_info` resolves subagent threads (see _subagent_entry).
     `image_ref(kind, source, alt)` returns HTML for an image ("path": a file an agent
@@ -489,7 +509,21 @@ def render_items(items: list[dict], child_info=None, image_ref=None) -> list[dic
 
     `o` is the ordinal of the entry's last item, so `o > cursor` finds new entries.
     In-progress assistant text is left out; it appears once it finishes.
+    A turn's changed files (its checkpoint) go under its last reply, folded unless
+    `expanded` has "f" + the run's short id.
     """
+    # Each run's changed files, and the reply they go under.
+    files_by_run: dict[str, list[dict]] = {}
+    last_reply: dict[str, int] = {}
+    for it in items:
+        run = it.get("runId")
+        if not run:
+            continue
+        if it.get("type") == "checkpoint" and it.get("files"):
+            files_by_run[run] = it["files"]
+        elif (it.get("type") == "assistant_message" and not it.get("streaming")
+              and split_replies(it.get("text", ""))[0].strip()):
+            last_reply[run] = it.get("ordinal", 0)
     entries: list[dict] = []
     group: list[tuple[str, list[str], bool]] = []
     group_o = 0
@@ -543,6 +577,12 @@ def render_items(items: list[dict], child_info=None, image_ref=None) -> list[dic
             flush()
             entry = {"o": o, "role": "agent", "text": clean_text(body),
                      "html": to_html(body, image=_md_image(image_ref))}
+            run = item.get("runId")
+            if run in files_by_run and last_reply.get(run) == o:
+                key = "f" + short_id(run)
+                text, files_html = changed_files(files_by_run[run], key in expanded, key)
+                entry["text"] += "\n" + text
+                entry["html"] += files_html
             if replies is not None:
                 entry["replies"] = replies
             entries.append(entry)

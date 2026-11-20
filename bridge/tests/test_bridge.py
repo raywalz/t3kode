@@ -774,6 +774,33 @@ class BridgeTests(unittest.TestCase):
         self.assertNotEqual(self.b.thread_view(self.s1)["v"], v["v"])
 
 
+    def test_changed_files_fold_under_the_last_reply(self):
+        self.t3.items["t1"] = [
+            item(1, "user_message", runId="r1", text="Fix it", createdBy="user"),
+            item(2, "assistant_message", runId="r1", text="Looking.", streaming=False),
+            item(3, "dynamic_tool", runId="r1", toolName="Edit", input={"file_path": "/a/b.py"}),
+            item(4, "assistant_message", runId="r1", text="Fixed.", streaming=False),
+            item(5, "checkpoint", runId="r1", files=[
+                {"path": "a/b.py", "kind": "modified", "additions": 10, "deletions": 2},
+                {"path": "a/new.py", "kind": "added", "additions": 5, "deletions": 0}]),
+            item(6, "user_message", runId="r2", text="Thanks", createdBy="user"),
+            item(7, "assistant_message", runId="r2", text="No changes here.", streaming=False),
+            item(8, "checkpoint", runId="r2", files=[])]
+        self.t3.threads["t1"] = dict(self.t3.threads["t1"], itemCount=8, updatedAt="2026-01-07T00:00:00Z")
+        self.b.refresh()
+        v = self.b.thread_view(self.s1)
+        fixed = next(e for e in v["entries"] if e["text"].startswith("Fixed."))
+        self.assertEqual(fixed["text"], "Fixed.\n▸ 2 files changed · +15 −2")
+        key = "f" + render.short_id("r1")
+        self.assertIn(f'href="t3:run:{key}"', fixed["html"])
+        self.assertEqual(v["entries"][-1]["text"], "No changes here.")  # nothing changed: no line
+        # Tapping it lists the files, and that counts as a change for the device.
+        opened = self.b.thread_view(self.s1, expand=frozenset({key}))
+        fixed2 = next(e for e in opened["entries"] if e["text"].startswith("Fixed."))
+        self.assertIn("a/new.py (new) +5 −0", fixed2["text"])
+        self.assertNotEqual(opened["v"], v["v"])
+
+
 class TokenTests(unittest.TestCase):
     class Client:
         def __init__(self, days_left, valid=("old", "new")):

@@ -146,6 +146,10 @@ uses it. Returns the new thread view. Choosing the current model changes nothing
   `html` is a link to `t3:run:<run>`. Pass `expand=<run>,<run>` (in the reply body:
   `"expand": [...]`) to show those turns' steps, with the fold shown open ("▾").
 - `entries`: `role` is `you | agent | tool | note | fold | subagent`.
+- A finished turn that changed files gets a line under its last reply, like the app's
+  Changed files card: "▸ 3 files changed · +120 −30" (from the turn's checkpoint). It
+  links to `t3:run:f<run>`; pass `f<run>` in `expand` to list the files with their
+  added and removed lines.
 - A `subagent` entry is one line per subagent ("Agent: <task> · <state>", with the
   subagent thread's live state). When its thread exists, the entry has `thread` (its id)
   and its `html` links to `t3:thread:<id>`. A subagent that's still working stays
