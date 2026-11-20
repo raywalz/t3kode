@@ -331,7 +331,11 @@ function T3:showList(project_id, title)
         title_bar_left_icon = "appbar.menu",
         close_callback = function()
             UIManager:close(menu)
-            if self.list and self.list.menu == menu then self.list = self.list.parent end
+            if self.list and self.list.menu == menu then
+                self.list = self.list.parent
+                -- Back from a project's list to the full one.
+                self:refreshListOnReturn()
+            end
         end,
     }
     -- Keep the list open underneath a thread instead of closing on tap.
@@ -365,6 +369,15 @@ function T3:refreshList(force)
     local menu = list.menu
     local first = ((menu.page or 1) - 1) * (menu.perpage or 1) + 1
     menu:switchItemTable(nil, self:listItems(body, list.project_id), first)
+end
+
+--- Coming back to the list: reload it in full. A changed-since check isn't enough here:
+--- it can miss the thread just read losing its "new", and the "ago" times would be stale.
+function T3:refreshListOnReturn()
+    if not self.list or not NetworkMgr:isConnected() then return end
+    pcall(function() self:refreshList(true) end)
+    -- Restart the poll so it doesn't fire right after this.
+    self:scheduleListPoll()
 end
 
 function T3:scheduleListPoll()
@@ -720,8 +733,7 @@ function T3:showThread(view, opts)
                 self.viewer = nil
                 self.view = nil
                 if self:returnToParent(view) then return end
-                -- Pick up whatever changed while the thread was open.
-                pcall(function() self:refreshList(false) end)
+                self:refreshListOnReturn()
             end
         end,
     }
