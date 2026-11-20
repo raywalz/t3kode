@@ -12,6 +12,7 @@ import hashlib
 import posixpath
 import re
 import shlex
+import urllib.parse
 from datetime import datetime
 
 from .markdown import image_placeholder, text_html, to_html
@@ -305,6 +306,42 @@ _SILENT = {"reasoning", "checkpoint", "todo_list", "compaction", "thread_created
 _FOLD = "__fold__"
 # What the app sends when you tap Implement on a proposed plan (apps/web/src/proposedPlan.ts).
 PLAN_PROMPT = "PLEASE IMPLEMENT THIS PLAN:\n"
+
+# A quote you cited in T3 (select text in a reply, add a comment): a markdown link whose
+# address carries the quoted text and your comment, URL-encoded.
+_CITATION = re.compile(r"\[[^\]\n]*\]\((t3-citation://[^)\s]+)\)")
+QUOTE_MAX = 300
+
+
+def user_message(text: str) -> tuple[str, str]:
+    """Your message as (plain text, HTML), with each citation shown as its quoted text
+    (clipped) in a block quote, then your comment on it."""
+    plain: list[str] = []
+    out: list[str] = []
+    pos = 0
+
+    def add(t: str) -> None:
+        t = t.strip()
+        if t:
+            plain.append(t)
+            out.append(text_html(t))
+
+    for m in _CITATION.finditer(text):
+        add(text[pos:m.start()])
+        pos = m.end()
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(m.group(1)).query)
+        quote = re.sub(r"\n\s*\n(\s*\n)+", "\n\n", (q.get("text") or [""])[0].strip())
+        if len(quote) > QUOTE_MAX:
+            quote = quote[:QUOTE_MAX - 1].rstrip() + "…"
+        if quote:
+            plain.append(f"“{quote}”")
+            out.append(f"<blockquote>{text_html(quote)}</blockquote>")
+        add((q.get("comment") or [""])[0])
+    if not pos:
+        return text, text_html(text)
+    add(text[pos:])
+    return "\n\n".join(plain), "".join(out)
+
 
 _KEEP_WHEN_FOLDED = {"user_message", "notification", "user_input_request", "proposed_plan"}
 
@@ -607,8 +644,9 @@ def render_items(items: list[dict], child_info=None, image_ref=None,
                 continue
             flush()
             if item.get("createdBy", "user") == "user":
-                entries.append({"o": o, "role": "you", "text": text,
-                                "html": text_html(text) + _attachment_images(item, image_ref)})
+                plain, body = user_message(text)
+                entries.append({"o": o, "role": "you", "text": plain,
+                                "html": body + _attachment_images(item, image_ref)})
             else:
                 # Sent by an agent or by T3 (task prompts, wake-ups). Shown, but marked.
                 clipped = text if len(text) <= 600 else text[:599] + "…"

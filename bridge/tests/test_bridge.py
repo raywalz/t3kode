@@ -287,6 +287,23 @@ class RenderTests(unittest.TestCase):
         self.assertNotIn("replies", e[0]["html"])
 
 
+class CitationTests(unittest.TestCase):
+    def test_citations_show_quote_and_comment(self):
+        url = ("t3-citation://v1/env/thread%3Ax/message%3Ay?text=Reload+without+restarting%3A+"
+               "%22Reload%22%0A%0A%0A%0AFrom+you&start=1&end=2&prefix=a&suffix=+b&comment=do+this+please")
+        plain, body = render.user_message(f"[Assistant quote]({url}) [Assistant quote]({url}) and <b>")
+        self.assertEqual(plain, "“Reload without restarting: \"Reload\"\n\nFrom you”\n\ndo this please\n\n"
+                                "“Reload without restarting: \"Reload\"\n\nFrom you”\n\ndo this please\n\nand <b>")
+        self.assertEqual(body.count("<blockquote><p>Reload without restarting: \"Reload\"</p><p>From you</p>"
+                                    "</blockquote><p>do this please</p>"), 2)
+        self.assertTrue(body.endswith("<p>and &lt;b&gt;</p>"))
+        self.assertNotIn("t3-citation", body)
+        long = "x" * 500
+        plain, _ = render.user_message(f"[q](t3-citation://v1/a?text={long})")
+        self.assertEqual(plain, "“" + "x" * (render.QUOTE_MAX - 1) + "…”")
+        self.assertEqual(render.user_message("plain [link](https://e.com)")[0], "plain [link](https://e.com)")
+
+
 class BridgeTests(unittest.TestCase):
     def setUp(self):
         self.t3 = FakeT3()

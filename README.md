@@ -26,7 +26,8 @@ Status: experimental, but in daily use on a Kobo Clara BW.
   tables, code), tool calls collapsed into one-line markers, and finished turns folded
   into "Worked for 1m 12s" like T3's own apps, with the files a turn changed in one
   line under its reply ("3 files changed · +120 −30"; tap it for the list). Tap a fold to see its steps, or a
-  subagent to open its thread. Images in replies and attachments show inline (shrunk
+  subagent to open its thread. Text you quoted from a reply shows as a quote, with your
+  comment under it. Images in replies and attachments show inline (shrunk
   and grayscale when ImageMagick is installed); tap one to view it full screen.
 - **Replies:** T3's pending approvals (Allow / Allow for session / Decline) and questions
   (single or multiple choice) are buttons, answered the same way the desktop app
