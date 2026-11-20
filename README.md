@@ -30,6 +30,24 @@ curl -H "authorization: Bearer $BRIDGE_TOKEN" http://127.0.0.1:8787/v1/threads
 The device API is described in [docs/bridge-api.md](docs/bridge-api.md). Run the
 tests with `cd bridge && python3 -m unittest discover -s tests`.
 
+## Installing the KOReader plugin
+
+Copy `plugin/t3.koplugin` into KOReader's `plugins/` folder (over USB or SSH) and
+restart KOReader. Then open **Tools → T3 Code** and set **Bridge address**
+(for example `http://<bridge host>:8787`) and **Bridge token** (the
+`BRIDGE_TOKEN` from `.env`). The bridge must listen on an address the e-reader
+can reach; see `BRIDGE_HOST` in `.env.example`.
+
+You can also write the settings file directly to
+`koreader/settings/t3.lua`:
+
+```lua
+return {
+    ["bridge_url"] = "http://<bridge host>:8787",
+    ["bridge_token"] = "<BRIDGE_TOKEN>",
+}
+```
+
 ## Trying the API test
 
 A standalone check of T3's own API, without the bridge:
