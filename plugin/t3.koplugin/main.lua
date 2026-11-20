@@ -837,6 +837,7 @@ function T3:enterSecret(view)
                 callback = function()
                     local secret = dialog:getInputText()
                     if not secret:match("%S") then return end
+                    dialog._t3_sent = true
                     UIManager:close(dialog)
                     local ok, result = withBusy(_("Saving…"), function()
                         return self.api:answerSecret(view.id, secret)
@@ -854,7 +855,7 @@ function T3:enterSecret(view)
     }
     dialog.onCloseWidget = function(d)
         InputDialog.onCloseWidget(d)
-        self:endTyping()
+        self:endTyping(d._t3_sent)
     end
     self.typing = true -- hold background redraws while the box is open
     UIManager:show(dialog)
@@ -933,6 +934,7 @@ function T3:compose(o)
                 callback = function()
                     local text = dialog:getInputText()
                     if not text:match("%S") then return end
+                    dialog._t3_sent = true
                     UIManager:close(dialog)
                     o.on_send(text)
                 end,
@@ -941,7 +943,7 @@ function T3:compose(o)
     }
     dialog.onCloseWidget = function(d)
         InputDialog.onCloseWidget(d)
-        self:endTyping()
+        self:endTyping(d._t3_sent)
     end
     -- Start at four lines (sized before it's shown, so it costs no extra redraw).
     rebuild(minHeight(), true)
@@ -951,17 +953,18 @@ function T3:compose(o)
 end
 
 --- The text box closed: show any thread update that arrived while it was open.
-function T3:endTyping()
+--- `sent`: the caller is sending the text and will show the result, which is
+--- newer than anything held, so drop the held update.
+function T3:endTyping(sent)
     self.typing = false
     local held = self.held_view
     self.held_view = nil
-    if held and self.view and held.id == self.view.id then
-        UIManager:nextTick(function()
-            if self.view and held.id == self.view.id and not self.typing then
-                self:showThread(held, { update = true })
-            end
-        end)
-    end
+    if sent or not held then return end
+    UIManager:nextTick(function()
+        if self.view and held.id == self.view.id and not self.typing then
+            self:showThread(held, { update = true })
+        end
+    end)
 end
 
 function T3:showOlder(view, before)
