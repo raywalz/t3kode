@@ -120,17 +120,17 @@ function Api:thread(id, params)
 end
 
 --- Quick check (no waiting) whether the thread changed since version v.
-function Api:changedSince(id, v)
-    return self:request("GET", "/v1/threads/" .. id .. "/wait", { v = v, timeout = 0 })
+function Api:changedSince(id, v, progress)
+    return self:request("GET", "/v1/threads/" .. id .. "/wait", { v = v, timeout = 0, progress = progress })
 end
 
 function Api:listChangedSince(v, limit)
     return self:request("GET", "/v1/threads/wait", { v = v, timeout = 0, limit = limit or 8 })
 end
 
-function Api:reply(id, reply_id, text)
+function Api:reply(id, reply_id, text, progress)
     return self:requestWithRetry("POST", "/v1/threads/" .. id .. "/reply", nil, {
-        reply = reply_id, text = text, client_msg_id = Api.newMessageId(),
+        reply = reply_id, text = text, client_msg_id = Api.newMessageId(), progress = progress or nil,
     })
 end
 

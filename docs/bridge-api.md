@@ -11,8 +11,9 @@ labels and sends back IDs.
   409 (a button that's out of date: the request was already answered, or a suggestion
   belongs to an older turn), or 502 (T3 failed).
 - IDs are short (8 characters), stable aliases for T3's long IDs. They survive bridge restarts.
-- Text is plain: the bridge strips the markdown that reads badly as plain text.
-  Tool markers use `▸`, bullets use `•`. No emoji.
+- Each entry comes twice: `text` is plain (markdown stripped) and `html` is the same
+  content as simple HTML (headings, bold/italic, lists, tables, code blocks, quotes)
+  for KOReader's HTML widget. Tool markers use `▸`, bullets use `•`. No emoji.
 
 ## Versions and waiting
 
@@ -25,8 +26,10 @@ Threads and the thread list carry a version `v`. A wait call returns as soon as
 - the next question of a multi-question request comes up
 - new content arrives while the thread is not working
 
-New tool calls while the agent works do **not** change `v`. That keeps e-ink
-redraws down; tap refresh to see progress. Versions reset when the bridge
+By default, new tool calls while the agent works do **not** change `v`. That keeps
+e-ink redraws down. Pass `progress=1` to the thread view, the thread wait, and (as
+`"progress": true`) the reply body to get a version that also changes on every new
+step mid-turn. The device's "Show progress while working" setting does this. Versions reset when the bridge
 restarts, so a different `v` just means "fetch again".
 
 To catch up after being offline: call the wait endpoint with the last `v`. It
@@ -59,13 +62,13 @@ Same body as the list, plus `"changed": true|false`.
 
 `{"projects": [{"id", "title"}]}`, for choosing where a new thread goes.
 
-### `GET /v1/threads/<id>?turns=3&after=<cursor>&before=<cursor>&visit=1`
+### `GET /v1/threads/<id>?turns=3&after=<cursor>&before=<cursor>&visit=1&progress=1`
 
 ```json
 {"id": "jqlcag76", "title": "Fix login", "state": "done", "v": 264, "cursor": 1000005,
  "more_before": true,
  "entries": [
-   {"o": 1000001, "role": "you", "text": "Why does login fail?"},
+   {"o": 1000001, "role": "you", "text": "Why does login fail?", "html": "<p>Why does login fail?</p>"},
    {"o": 1000003, "role": "tool", "text": "▸ ran ssh box, grep · edited auth.py"},
    {"o": 1000005, "role": "agent", "text": "The session cookie expired early. I fixed it."}],
  "pending": null,
@@ -111,7 +114,7 @@ example, one that can't be resumed). Then there are no buttons.
 - `answer`: answer the current question with it (a custom answer)
 - `none`: the question only accepts its options
 
-### `GET /v1/threads/<id>/wait?v=<v>&timeout=55`
+### `GET /v1/threads/<id>/wait?v=<v>&timeout=55&progress=1`
 
 Same body as the thread view, plus `"changed": true|false`.
 

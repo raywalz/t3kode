@@ -12,6 +12,8 @@ import posixpath
 import re
 import shlex
 
+from .markdown import text_html, to_html
+
 LIVE_STATUSES = {"queued", "preparing", "starting", "running", "waiting"}
 
 TOOL_MARK = "▸"
@@ -52,6 +54,8 @@ _CODE = re.compile(r"`([^`\n]+)`")
 _HEADING = re.compile(r"^#{1,6}\s+", re.M)
 _BULLET = re.compile(r"^(\s*)[-*]\s+", re.M)
 _FENCE = re.compile(r"^```.*$\n?", re.M)
+_ITALIC = re.compile(r"(?<![\w*])\*(?=[^\s*])(.+?)(?<=[^\s*])\*(?![\w*])")
+_TABLE_SEP = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$\n?", re.M)
 
 
 def clean_text(text: str) -> str:
@@ -59,6 +63,8 @@ def clean_text(text: str) -> str:
     text = _FENCE.sub("", text)
     text = _LINK.sub(lambda m: m.group(1) if m.group(1) != m.group(2) else m.group(2), text)
     text = _BOLD.sub(r"\2", text)
+    text = _ITALIC.sub(r"\1", text)
+    text = _TABLE_SEP.sub("", text)
     text = _CODE.sub(r"\1", text)
     text = _HEADING.sub("", text)
     text = _BULLET.sub(lambda m: f"{m.group(1)}{NOTE_MARK} ", text)
@@ -79,7 +85,7 @@ def _base(path: str) -> str:
 _HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n\s*\2\s*(?=\n|$)", re.S)
 _PROGRAM = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.+-]*$")
 _BUILTINS = {"cd", "set", "export", "echo", "true", "false", "printf", "test", "[", "[[",
-             "source", ".", "unset", "local", "read", "sleep", "exit", "return", "done", "fi",
+             "source", ".", "unset", "local", "read", "exit", "return", "done", "fi",
              "for", "in", "esac", "case"}
 _KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!"}
 _SEPARATORS = {"&&", "||", ";", "&", "(", ")", "{", "}"}
@@ -251,7 +257,8 @@ def render_items(items: list[dict]) -> list[dict]:
     def flush():
         nonlocal group
         if group:
-            entries.append({"o": group_o, "role": "tool", "text": summarize_tools(group)})
+            line = summarize_tools(group)
+            entries.append({"o": group_o, "role": "tool", "text": line, "html": text_html(line)})
             group = []
 
     for item in items:
@@ -269,23 +276,26 @@ def render_items(items: list[dict]) -> list[dict]:
             if item.get("streaming") or not item.get("text", "").strip():
                 continue
             flush()
-            entries.append({"o": o, "role": "agent", "text": clean_text(item["text"])})
+            entries.append({"o": o, "role": "agent", "text": clean_text(item["text"]),
+                            "html": to_html(item["text"])})
         elif kind == "proposed_plan":
             if item.get("streaming"):
                 continue
             flush()
-            entries.append({"o": o, "role": "agent", "text": "Plan:\n" + clean_text(item.get("markdown", ""))})
+            plan = item.get("markdown", "")
+            entries.append({"o": o, "role": "agent", "text": "Plan:\n" + clean_text(plan),
+                            "html": "<h4>Plan</h4>" + to_html(plan)})
         elif kind == "user_message":
             text = item.get("text", "").strip()
             if not text:
                 continue
             flush()
             if item.get("createdBy", "user") == "user":
-                entries.append({"o": o, "role": "you", "text": text})
+                entries.append({"o": o, "role": "you", "text": text, "html": text_html(text)})
             else:
                 # Sent by an agent or by T3 (task prompts, wake-ups). Shown, but marked.
                 clipped = text if len(text) <= 600 else text[:599] + "…"
-                entries.append({"o": o, "role": "note", "text": clipped})
+                entries.append({"o": o, "role": "note", "text": clipped, "html": text_html(clipped)})
         else:
             note = _note(item)
             if note is None:
@@ -296,7 +306,7 @@ def render_items(items: list[dict]) -> list[dict]:
                 group_o = o
                 continue
             flush()
-            entries.append({"o": o, "role": "note", "text": note})
+            entries.append({"o": o, "role": "note", "text": note, "html": text_html(note)})
     flush()
     return entries
 

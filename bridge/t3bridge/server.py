@@ -31,6 +31,10 @@ def _int(q: dict, key: str, default=None, lo=None, hi=None):
     return v
 
 
+def _flag(q: dict, key: str) -> bool:
+    return q.get(key, ["0"])[0] in ("1", "true", "yes")
+
+
 def make_handler(bridge: Bridge, device_token: str):
     routes = [
         ("GET", re.compile(r"^/v1/health$"), "health"),
@@ -126,18 +130,21 @@ def make_handler(bridge: Bridge, device_token: str):
         def r_view(self, q, short):
             return bridge.thread_view(short, after=_int(q, "after"), before=_int(q, "before"),
                                       turns=_int(q, "turns", 3, 1, 50),
-                                      visit=q.get("visit", ["0"])[0] == "1")
+                                      visit=_flag(q, "visit"), progress=_flag(q, "progress"))
 
         def r_wait(self, q, short):
-            changed = bridge.wait_thread(short, _int(q, "v", 0), _int(q, "timeout", 55, 0, MAX_WAIT))
-            body = bridge.thread_view(short, after=_int(q, "after"), turns=_int(q, "turns", 3, 1, 50))
+            progress = _flag(q, "progress")
+            changed = bridge.wait_thread(short, _int(q, "v", 0), _int(q, "timeout", 55, 0, MAX_WAIT),
+                                         progress=progress)
+            body = bridge.thread_view(short, after=_int(q, "after"), turns=_int(q, "turns", 3, 1, 50),
+                                      progress=progress)
             body["changed"] = changed
             return body
 
         def r_reply(self, q, short):
             b = self._body()
             return bridge.reply(short, reply_id=b.get("reply"), text=b.get("text"),
-                                client_msg_id=b.get("client_msg_id"))
+                                client_msg_id=b.get("client_msg_id"), progress=bool(b.get("progress")))
 
         def r_start(self, q):
             b = self._body()

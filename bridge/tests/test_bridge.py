@@ -110,6 +110,22 @@ CONVERSATION = [
 ]
 
 
+class MarkdownTests(unittest.TestCase):
+    def test_blocks_and_inline(self):
+        from t3bridge.markdown import to_html
+        out = to_html("## Title\nSome **bold** and *it* `a<b`\n\n- one\n  - two\n\n"
+                      "| A | B |\n|---|---|\n| 1 | 2 |\n\n```\nx < y\n```")
+        self.assertEqual(out, "<h4>Title</h4><p>Some <b>bold</b> and <i>it</i> <code>a&lt;b</code></p>"
+                         "<ul><li>one<ul><li>two</li></ul></li></ul>"
+                         "<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>"
+                         "<pre>x &lt; y</pre>")
+
+    def test_entries_carry_html(self):
+        e = render.render_items([item(1, "assistant_message", text="**Hi** <there>", streaming=False)])
+        self.assertEqual(e[0]["html"], "<p><b>Hi</b> &lt;there&gt;</p>")
+        self.assertEqual(e[0]["text"], "Hi <there>")
+
+
 class RenderTests(unittest.TestCase):
     def test_collapses_tools_and_cleans_text(self):
         entries = render.render_items(CONVERSATION)
@@ -133,7 +149,8 @@ class RenderTests(unittest.TestCase):
             item(2, "brand_new_kind"),
             item(3, "command_execution", input="make", status="failed"),
         ])
-        self.assertEqual(entries, [{"o": 3, "role": "tool", "text": "▸ brand new kind · ran make (1 failed)"}])
+        self.assertEqual([(e["o"], e["role"], e["text"]) for e in entries],
+                         [(3, "tool", "▸ brand new kind · ran make (1 failed)")])
 
     def test_question_note_shows_answer(self):
         e = render.render_items([item(1, "user_input_request", requestId="r",
@@ -269,6 +286,15 @@ class BridgeTests(unittest.TestCase):
                                        updatedAt="2026-01-05T00:00:00Z")
         self.b.refresh()
         self.assertEqual(self.b.thread_v["t2"], v)
+
+    def test_progress_mode_wakes_on_tool_calls(self):
+        pv = self.b.thread_view(self.s2, progress=True)["v"]
+        self.t3.threads["t2"] = thread("t2", "p2", status="running", itemCount=41,
+                                       updatedAt="2026-01-06T00:00:00Z")
+        self.b.refresh()
+        self.assertTrue(self.b.wait_thread(self.s2, pv, timeout=0.05, progress=True))
+        v = self.b.thread_view(self.s2)["v"]
+        self.assertFalse(self.b.wait_thread(self.s2, v, timeout=0.05))
 
     def test_failed_suggestions_are_retried_later(self):
         from t3bridge import core

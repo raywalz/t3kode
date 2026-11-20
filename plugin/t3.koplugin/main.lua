@@ -16,7 +16,6 @@ local InputDialog = require("ui/widget/inputdialog")
 local LuaSettings = require("luasettings")
 local Menu = require("ui/widget/menu")
 local NetworkMgr = require("ui/network/manager")
-local TextViewer = require("ui/widget/textviewer")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
@@ -24,9 +23,11 @@ local _ = require("gettext")
 local T = require("ffi/util").template
 
 local Api = require("t3_api")
+local ThreadView = require("t3_threadview")
 
 local LIST_LIMIT = 8
 local POLL_ACTIVE = 15 -- seconds, while a thread is working or waiting for you
+local POLL_PROGRESS = 10 -- seconds, while working with "Show progress while working" on
 local POLL_IDLE = 60 -- seconds, otherwise
 local POLL_LIST = 30
 
@@ -69,6 +70,15 @@ function T3:addToMainMenu(menu_items)
                 callback = function() self:onT3Open() end,
             },
             {
+                text = _("Show progress while working"),
+                help_text = _("Redraw an open thread as the agent works, not only when its turn finishes."),
+                checked_func = function() return self:showProgress() end,
+                callback = function()
+                    self.settings:saveSetting("show_progress", not self:showProgress())
+                    self.settings:flush()
+                end,
+            },
+            {
                 text = _("Bridge address"),
                 keep_menu_open = true,
                 callback = function() self:editSetting("bridge_url", _("Bridge address"),
@@ -81,6 +91,14 @@ function T3:addToMainMenu(menu_items)
             },
         },
     }
+end
+
+function T3:showProgress()
+    return self.settings:nilOrTrue("show_progress")
+end
+
+function T3:progressParam()
+    return self:showProgress() and 1 or nil
 end
 
 function T3:editSetting(key, title, hint, secret)
@@ -285,7 +303,7 @@ end
 
 function T3:openThread(id)
     local ok, view = withBusy(_("Loading…"), function()
-        return self.api:thread(id, { visit = 1 })
+        return self.api:thread(id, { visit = 1, progress = self:progressParam() })
     end)
     if not ok then
         notify(view)
@@ -294,45 +312,56 @@ function T3:openThread(id)
     self:showThread(view)
 end
 
-local function composeText(view)
+local function esc(text)
+    return (tostring(text or ""):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
+end
+
+local ROLE_LABEL = { you = _("You"), agent = _("Agent") }
+
+--- The thread as HTML. Entries arrive pre-rendered from the bridge (`html`);
+--- `text` is the plain fallback for older bridges.
+local function composeHtml(view, show_progress)
     local parts = {}
     if view.more_before == true then
-        table.insert(parts, _("⋯ Earlier messages: tap Older."))
+        table.insert(parts, '<div class="more">' .. esc(_("⋯ Earlier messages: tap Older.")) .. "</div>")
     end
     for _i, e in ipairs(view.entries or {}) do
-        local text = str(e.text) or ""
-        if e.role == "you" then
-            table.insert(parts, _("You: ") .. text)
-        elseif e.role == "note" then
-            table.insert(parts, "• " .. text)
-        else
-            table.insert(parts, text)
-        end
+        local role = str(e.role) or "note"
+        local body = str(e.html) or ("<p>" .. esc(str(e.text)) .. "</p>")
+        local label = ROLE_LABEL[role]
+        table.insert(parts, '<div class="entry ' .. role .. '">'
+            .. (label and ('<div class="label">' .. esc(label) .. "</div>") or "")
+            .. body .. "</div>")
     end
     local state = str(view.state)
     if state == "working" then
-        table.insert(parts, _("… Working. This view updates when the turn finishes."))
+        local msg = show_progress and _("… Working. New steps appear as they happen.")
+            or _("… Working. This view updates when the turn finishes.")
+        table.insert(parts, '<div class="status">' .. esc(msg) .. "</div>")
     elseif state == "failed" then
-        table.insert(parts, _("The last run failed."))
+        table.insert(parts, '<div class="status">' .. esc(_("The last run failed.")) .. "</div>")
     end
     local p = view.pending
     if type(p) == "table" then
-        local lines = { _("── Needs you ──") }
+        local lines = { '<div class="pending"><div class="pending-title">' .. esc(_("Needs you")) .. "</div>" }
         local head = str(p.header)
         local step = str(p.step)
-        table.insert(lines, (head and (head .. ": ") or "") .. (str(p.text) or "")
-            .. (step and ("  (" .. step .. ")") or ""))
-        if str(p.note) then table.insert(lines, str(p.note)) end
+        table.insert(lines, "<p>" .. (head and ("<b>" .. esc(head) .. ":</b> ") or "") .. esc(str(p.text))
+            .. (step and (" (" .. esc(step) .. ")") or "") .. "</p>")
+        if str(p.note) then table.insert(lines, "<p><i>" .. esc(str(p.note)) .. "</i></p>") end
+        local opts = {}
         for _i, o in ipairs(type(p.options) == "table" and p.options or {}) do
             local desc = str(o.description)
-            table.insert(lines, "• " .. (str(o.label) or "") .. (desc and (": " .. desc) or ""))
+            table.insert(opts, "<li><b>" .. esc(str(o.label)) .. "</b>" .. (desc and (": " .. esc(desc)) or "") .. "</li>")
         end
-        table.insert(parts, table.concat(lines, "\n"))
+        if #opts > 0 then table.insert(lines, "<ul>" .. table.concat(opts) .. "</ul>") end
+        table.insert(lines, "</div>")
+        table.insert(parts, table.concat(lines))
     end
     if #parts == 0 then
-        return _("Nothing here yet.")
+        return "<p>" .. esc(_("Nothing here yet.")) .. "</p>"
     end
-    return table.concat(parts, "\n\n")
+    return table.concat(parts)
 end
 
 local SHORT_LABELS = { ["c:summarize"] = _("Summarize"), ["c:continue"] = _("Continue"), ["c:stop"] = _("Stop") }
@@ -387,19 +416,18 @@ function T3:showThread(view)
     self.viewer = nil
     if old then UIManager:close(old) end
     local viewer
-    viewer = TextViewer:new{
+    viewer = ThreadView:new{
         title = str(view.title) or _("Thread"),
-        text = composeText(view),
-        buttons_table = self:threadButtons(view),
-        show_menu = false,
-        justified = false,
-        auto_para_direction = false,
+        html = composeHtml(view, self:showProgress()),
+        buttons = self:threadButtons(view),
         close_callback = function()
-            if self.viewer == viewer then self:stopThreadPoll(); self.viewer = nil end
+            if self.viewer == viewer then
+                self:stopThreadPoll()
+                self.viewer = nil
+                self.view = nil
+            end
         end,
     }
-    -- Newest messages are at the bottom.
-    if viewer.scroll_text_w then viewer.scroll_text_w:scrollToBottom() end
     self.viewer = viewer
     self.view = view
     UIManager:show(viewer)
@@ -417,7 +445,9 @@ function T3:closeThread()
 end
 
 function T3:reloadThread(id)
-    local ok, view = withBusy(_("Refreshing…"), function() return self.api:thread(id) end)
+    local ok, view = withBusy(_("Refreshing…"), function()
+        return self.api:thread(id, { progress = self:progressParam() })
+    end)
     if not ok then
         notify(view)
         return
@@ -437,11 +467,13 @@ function T3:scheduleThreadPoll()
     local view = self.view
     if not view then return end
     local busy = view.state == "working" or view.state == "needs_you"
+    local interval = busy and POLL_ACTIVE or POLL_IDLE
+    if view.state == "working" and self:showProgress() then interval = POLL_PROGRESS end
     self.thread_poll = function()
         self.thread_poll = nil
         if self.view ~= view then return end
         if NetworkMgr:isConnected() then
-            local ok, body = self.api:changedSince(view.id, view.v)
+            local ok, body = self.api:changedSince(view.id, view.v, self:progressParam())
             if self.view ~= view then return end
             if ok and body.changed == true then
                 self:showThread(body)
@@ -450,13 +482,13 @@ function T3:scheduleThreadPoll()
         end
         self:scheduleThreadPoll()
     end
-    UIManager:scheduleIn(busy and POLL_ACTIVE or POLL_IDLE, self.thread_poll)
+    UIManager:scheduleIn(interval, self.thread_poll)
 end
 
 function T3:sendReply(view, reply_id)
     local function go()
         local ok, result = withBusy(_("Sending…"), function()
-            return self.api:reply(view.id, reply_id, nil)
+            return self.api:reply(view.id, reply_id, nil, self:showProgress())
         end)
         if ok then
             self:showThread(result)
@@ -498,7 +530,7 @@ function T3:typeReply(view)
                     if not text:match("%S") then return end
                     UIManager:close(dialog)
                     local ok, result = withBusy(_("Sending…"), function()
-                        return self.api:reply(view.id, nil, text)
+                        return self.api:reply(view.id, nil, text, self:showProgress())
                     end)
                     if ok then
                         self:showThread(result)
@@ -526,13 +558,10 @@ function T3:showOlder(view, before)
     older.pending = nil
     local first = older.entries and older.entries[1] and older.entries[1].o
     local older_viewer
-    older_viewer = TextViewer:new{
+    older_viewer = ThreadView:new{
         title = T(_("%1 (earlier)"), str(view.title) or _("Thread")),
-        text = composeText(older),
-        show_menu = false,
-        justified = false,
-        auto_para_direction = false,
-        buttons_table = {{
+        html = composeHtml(older, false),
+        buttons = {{
             {
                 text = _("Older"),
                 enabled = older.more_before == true,
@@ -544,7 +573,6 @@ function T3:showOlder(view, before)
             { text = _("Close"), callback = function() UIManager:close(older_viewer) end },
         }},
     }
-    if older_viewer.scroll_text_w then older_viewer.scroll_text_w:scrollToBottom() end
     UIManager:show(older_viewer)
 end
 

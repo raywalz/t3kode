@@ -83,7 +83,9 @@ class Bridge:
         self.list_v = 0
         self.shell: dict | None = None
         self.threads: dict[str, dict] = {}  # long id -> shell thread
-        self.thread_v: dict[str, int] = {}
+        self.thread_v: dict[str, int] = {}  # changes when the screen should redraw
+        self.thread_pv: dict[str, int] = {}  # changes on any update, including mid-turn progress
+        self.sigs: dict[str, tuple] = {}
         self.wake_keys: dict[str, tuple] = {}
         self.by_short: dict[str, str] = {}  # short id -> long id (threads and projects)
         self.entries: dict[str, tuple[tuple, list[dict]]] = {}  # long id -> (sig, entries)
@@ -129,14 +131,19 @@ class Bridge:
         first = self.shell is None
         touched = []
         with self.cond:
-            changed = False
+            changed = progressed = False
             new_threads = {t["id"]: t for t in shell["threads"] if not t.get("deletedAt")}
             for tid, t in new_threads.items():
+                sig = _signature(t)
+                if self.sigs.get(tid) != sig:
+                    self.sigs[tid] = sig
+                    self.seq += 1
+                    self.thread_pv[tid] = self.seq
+                    progressed = True
                 key = _wake_key(t)
                 if self.wake_keys.get(tid) != key:
                     old = self.threads.get(tid)
-                    self.seq += 1
-                    self.thread_v[tid] = self.seq
+                    self._bump(tid)
                     self.wake_keys[tid] = key
                     changed = True
                     touched.append(tid)
@@ -144,9 +151,9 @@ class Bridge:
                             and render.thread_state(t) in ("done", "failed")):
                         finished.append(tid)
             for tid in set(self.threads) - set(new_threads):
-                self.seq += 1
-                self.thread_v[tid] = self.seq
+                self._bump(tid)
                 self.wake_keys.pop(tid, None)
+                self.sigs.pop(tid, None)
                 changed = True
             if changed or self.shell is None:
                 self.list_v = self.seq
@@ -156,12 +163,18 @@ class Bridge:
                 self.by_short[render.short_id(t["id"])] = t["id"]
             for p in shell["projects"]:
                 self.by_short[render.short_id(p["id"])] = p["id"]
-            if changed:
+            if changed or progressed:
                 self.cond.notify_all()
         for tid in finished:
             if self._wants_suggestions(tid):
                 self._schedule_suggestions(tid)
         self._prefetch(self._recent_per_project(3) if first else touched)
+
+    def _bump(self, tid: str) -> None:
+        """A change worth a redraw (caller holds self.cond). Also counts as progress."""
+        self.seq += 1
+        self.thread_v[tid] = self.seq
+        self.thread_pv[tid] = self.seq
 
     def _top_level(self, t: dict) -> bool:
         return not (t.get("lineage") or {}).get("parentThreadId")
@@ -266,7 +279,8 @@ class Bridge:
     # ---- thread view --------------------------------------------------------
 
     def thread_view(self, short: str, after: int | None = None, before: int | None = None,
-                    turns: int = 3, visit: bool = False) -> dict:
+                    turns: int = 3, visit: bool = False, progress: bool = False) -> dict:
+        """`progress`: report the version that also changes mid-turn (see wait_thread)."""
         self.last_device_at = time.monotonic()
         t = self._thread(short)
         entries = self._entries(t)
@@ -295,7 +309,7 @@ class Bridge:
         pending_view, replies, typed = self._replies(t, state, cursor)
         return {
             "id": short, "title": t.get("title") or "Untitled", "state": state,
-            "v": self.thread_v.get(t["id"], 0), "cursor": cursor,
+            "v": (self.thread_pv if progress else self.thread_v).get(t["id"], 0), "cursor": cursor,
             "more_before": more_before, "entries": shown,
             "pending": pending_view, "replies": replies, "typed": typed,
         }
@@ -394,8 +408,7 @@ class Bridge:
         finally:
             slot["done"].set()
             with self.cond:
-                self.seq += 1
-                self.thread_v[tid] = self.seq
+                self._bump(tid)
                 self.cond.notify_all()
 
     def _await_suggestions(self, t: dict, cursor: int) -> None:
@@ -405,15 +418,17 @@ class Bridge:
 
     # ---- waiting ------------------------------------------------------------
 
-    def wait_thread(self, short: str, v: int, timeout: float) -> bool:
-        """Block until the thread's version differs from `v`. True if it changed."""
+    def wait_thread(self, short: str, v: int, timeout: float, progress: bool = False) -> bool:
+        """Block until the thread's version differs from `v`. True if it changed.
+        With `progress`, new tool calls and messages during a turn count as changes too."""
+        versions = self.thread_pv if progress else self.thread_v
         self.last_device_at = time.monotonic()
         tid = self.by_short.get(short)
         if tid is None:
             raise BridgeError(404, "no such thread")
         deadline = time.monotonic() + timeout
         with self.cond:
-            while self.thread_v.get(tid, 0) == v:
+            while versions.get(tid, 0) == v:
                 left = deadline - time.monotonic()
                 if left <= 0:
                     return False
@@ -447,7 +462,7 @@ class Bridge:
         return result
 
     def reply(self, short: str, reply_id: str | None = None, text: str | None = None,
-              client_msg_id: str | None = None) -> dict:
+              client_msg_id: str | None = None, progress: bool = False) -> dict:
         self.last_device_at = time.monotonic()
         t = self._thread(short)
 
@@ -460,7 +475,7 @@ class Bridge:
             else:
                 raise BridgeError(400, "send `reply` or `text`")
             self._settle(t["id"], before)
-            return self.thread_view(short)
+            return self.thread_view(short, progress=progress)
 
         return self._once(client_msg_id, act)
 
@@ -550,8 +565,7 @@ class Bridge:
         else:
             # Next question: the view changes without anything changing in T3.
             with self.cond:
-                self.seq += 1
-                self.thread_v[t["id"]] = self.seq
+                self._bump(t["id"])
                 self.cond.notify_all()
 
     def _stop_thread(self, t: dict, cmid: str | None) -> None:
