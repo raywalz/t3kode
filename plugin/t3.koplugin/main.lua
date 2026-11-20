@@ -491,6 +491,31 @@ function T3:projectActions(p)
     UIManager:show(dialog)
 end
 
+--- Rename a thread: a one-line box with its title, or Auto for a title T3 writes.
+function T3:renameThread(t, done)
+    self:compose{
+        title = _("Rename thread"),
+        input = str(t.title) or "",
+        hint = _("Title"),
+        one_line = true,
+        send_text = _("Save"),
+        extras = { {
+            text = _("Auto"),
+            callback = function()
+                if self.compose_dialog then UIManager:close(self.compose_dialog) end
+                self:listAction(_("Asking T3 for a title…"), function()
+                    return self.api:threadAction(t.id, "auto_title")
+                end, done, "rename")
+            end,
+        } },
+        on_send = function(text)
+            self:listAction(_("Renaming…"), function()
+                return self.api:threadAction(t.id, "rename", nil, text)
+            end, done, "rename")
+        end,
+    }
+end
+
 --- Hold on a thread in the list (or the title of an open one): the app's thread menu
 --- (pin, snooze, mark unread, settle, archive). `done(kind)`: what to show afterwards.
 function T3:threadActions(t, done)
@@ -512,6 +537,13 @@ function T3:threadActions(t, done)
     local rows = {}
     table.insert(rows, action(pinned and _("Unpin") or _("Pin"), pinned and _("Unpinning…") or _("Pinning…"),
         function() return self.api:threadAction(t.id, pinned and "unpin" or "pin") end))
+    table.insert(rows, {{
+        text = _("Rename…"),
+        callback = function()
+            UIManager:close(dialog)
+            self:renameThread(t, done)
+        end,
+    }})
     if snoozed then
         table.insert(rows, action(_("Wake now"), _("Waking…"),
             function() return self.api:threadAction(t.id, "unsnooze") end))
@@ -1353,11 +1385,11 @@ function T3:compose(o)
     dialog = InputDialog:new{
         title = o.title,
         description = o.description,
-        input = "",
+        input = o.input or "",
         input_hint = o.hint,
-        allow_newline = true,
+        allow_newline = not o.one_line,
         width = Device.screen:getWidth(),
-        use_available_height = true,
+        use_available_height = not o.one_line,
         buttons = { row },
     }
     dialog.onCloseWidget = function(d)

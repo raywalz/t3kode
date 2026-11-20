@@ -212,9 +212,10 @@ def make_handler(bridge: Bridge, device_token: str):
 
         def r_action(self, q, short):
             b = self._body()
-            snooze = b.get("snooze")
+            snooze, title = b.get("snooze"), b.get("title")
             return bridge.thread_action(short, str(b.get("action", "")),
-                                        snooze=snooze if isinstance(snooze, str) else None)
+                                        snooze=snooze if isinstance(snooze, str) else None,
+                                        title=title if isinstance(title, str) else None)
 
         def r_settle(self, q, short):
             b = self._body()

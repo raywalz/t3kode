@@ -995,11 +995,15 @@ class Bridge:
         "unsnooze": ("thread.unsnooze", lambda t: not _snoozed(t)),
         "mark_unread": ("thread.mark-unread", render.is_unread),
         "archive": ("thread.archive", lambda t: t is None or bool(t.get("archivedAt"))),
+        "rename": ("thread.metadata.update", None),  # done: see thread_action
+        "auto_title": ("thread.metadata.update", None),
     }
 
-    def thread_action(self, short: str, action: str, snooze: str | None = None) -> dict:
-        """Pin, unpin, snooze (until one of the app's presets), wake, mark unread or archive
-        a thread, as the app's thread menu does. Returns once the shell shows it."""
+    def thread_action(self, short: str, action: str, snooze: str | None = None,
+                      title: str | None = None) -> dict:
+        """Pin, unpin, snooze (until one of the app's presets), wake, mark unread, archive,
+        rename (to `title`) or retitle (auto_title: T3 writes a new title) a thread, as
+        the app's thread menu does. Returns once the shell shows it."""
         self.last_device_at = time.monotonic()
         t = self._thread(short)
         if action not in self.ACTIONS:
@@ -1014,6 +1018,16 @@ class Bridge:
             fields["reason"] = "user"
         elif action == "archive" and render.thread_state(t) in ("working", "needs_you"):
             raise BridgeError(409, "stop the thread before archiving it")
+        elif action == "rename":
+            title = " ".join((title or "").split())
+            if not title:
+                raise BridgeError(400, "the title is empty")
+            fields["title"] = title
+            done = lambda now: (now or {}).get("title") == title
+        elif action == "auto_title":
+            # T3 generates it in the background; the list picks it up when it lands.
+            fields["regenerateTitle"] = True
+            done = lambda now: True
         try:
             self.client.thread_command(type_, t["id"], **fields)
         except T3Error as e:

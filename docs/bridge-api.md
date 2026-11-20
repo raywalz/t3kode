@@ -83,6 +83,8 @@ The app's thread menu, from the list's hold menu:
 {"action": "unsnooze"}       // wake it now
 {"action": "mark_unread"}
 {"action": "archive"}        // leaves the list (T3's shell omits archived threads)
+{"action": "rename", "title": "Fix the login bug"}
+{"action": "auto_title"}     // T3 writes a new title in the background
 ```
 
 Snooze presets are the app's: in an hour, in three hours, this evening at 18:00 (only

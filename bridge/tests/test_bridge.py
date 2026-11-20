@@ -68,6 +68,8 @@ class FakeT3:
             t.update(snoozedUntil=fields["snoozedUntil"], snoozedAt="2026-01-05T00:00:00Z")
         elif type_ == "thread.unsnooze":
             t.update(snoozedUntil=None)
+        elif type_ == "thread.metadata.update" and "title" in fields:
+            t.update(title=fields["title"])
         elif type_ == "thread.mark-unread":
             t.update(lastVisitedAt="2025-12-31T00:00:00Z")
         if type_ == "thread.archive":
@@ -807,6 +809,17 @@ class BridgeTests(unittest.TestCase):
         fixed2 = next(e for e in opened["entries"] if e["text"].startswith("Fixed."))
         self.assertIn("a/new.py (new) +5 −0", fixed2["text"])
         self.assertNotEqual(opened["v"], v["v"])
+
+
+    def test_rename_and_auto_title(self):
+        self.b.thread_action(self.s1, "rename", title="  Fix   the login bug ")
+        self.assertEqual(self.t3.calls[-1][1][:2], ("thread.metadata.update", "t1"))
+        self.assertEqual(self.t3.calls[-1][2], {"title": "Fix the login bug"})
+        self.assertEqual(self.b.thread_view(self.s1)["title"], "Fix the login bug")
+        with self.assertRaises(BridgeError):
+            self.b.thread_action(self.s1, "rename", title="   ")
+        self.b.thread_action(self.s1, "auto_title")
+        self.assertEqual(self.t3.calls[-1][2], {"regenerateTitle": True})
 
 
 class TokenTests(unittest.TestCase):

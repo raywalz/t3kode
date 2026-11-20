@@ -19,8 +19,8 @@ Status: experimental, but in daily use on a Kobo Clara BW.
 
 - **Thread list** grouped by project, marked *needs you*, *working*, *done*, or *failed*,
   with unread threads in bold. Subagent threads live under their parent, which shows
-  when one of them needs you. Hold a thread to pin it (pinned threads go on top), snooze
-  it, mark it unread, settle it, or archive it, as in the app's thread menu. Inside a thread, hold its title for the same menu; afterwards you're back in the list. Hold a project's name to start
+  when one of them needs you. Hold a thread to pin it (pinned threads go on top), rename
+  it (or let T3 retitle it), snooze it, mark it unread, settle it, or archive it, as in the app's thread menu. Inside a thread, hold its title for the same menu; afterwards you're back in the list. Hold a project's name to start
   a new thread in it.
 - **Thread view** that reads well on e-ink: formatted messages (headings, lists,
   tables, code), tool calls collapsed into one-line markers, and finished turns folded

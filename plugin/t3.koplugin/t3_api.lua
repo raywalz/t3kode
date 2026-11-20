@@ -183,11 +183,12 @@ function Api:settle(id, settled)
     return self:requestWithRetry("POST", "/v1/threads/" .. id .. "/settle", nil, { settled = settled })
 end
 
---- Pin, unpin, snooze, unsnooze, mark_unread or archive a thread. `snooze`: a preset
---- (hour, three-hours, evening, tomorrow, next-week), for "snooze".
-function Api:threadAction(id, action, snooze)
+--- Pin, unpin, snooze, unsnooze, mark_unread, archive, rename or auto_title a thread.
+--- `snooze`: a preset (hour, three-hours, evening, tomorrow, next-week), for "snooze".
+--- `title`: the new title, for "rename".
+function Api:threadAction(id, action, snooze, title)
     return self:requestWithRetry("POST", "/v1/threads/" .. id .. "/action", nil,
-        { action = action, snooze = snooze })
+        { action = action, snooze = snooze, title = title })
 end
 
 --- `model`: an id from Api:models(), or nil for the project's default.
