@@ -13,6 +13,7 @@ import os
 import socket
 import ssl
 import struct
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,6 +25,10 @@ ORCHESTRATION_PROTOCOL = "2"
 
 class T3Error(Exception):
     pass
+
+
+class T3SocketError(T3Error):
+    """The WebSocket closed or broke; safe to reconnect."""
 
 
 class T3RpcError(T3Error):
@@ -44,6 +49,7 @@ class T3Client:
         self.timeout = timeout
         self._ws: _WebSocket | None = None
         self._next_rpc_id = 0
+        self._rpc_lock = threading.Lock()
 
     @classmethod
     def from_env(cls) -> "T3Client":
@@ -100,7 +106,20 @@ class T3Client:
         return self._ws
 
     def rpc(self, method: str, payload: Any) -> Any:
-        """Call a unary RPC and return its success value."""
+        """Call a unary RPC and return its success value.
+
+        Reconnects once if the socket has died. That makes a retry possible after the
+        server already ran the command, so callers should pass a stable `commandId`:
+        T3 answers a repeated commandId with the original receipt instead of running it twice.
+        """
+        with self._rpc_lock:
+            try:
+                return self._rpc_once(method, payload)
+            except (OSError, T3SocketError):
+                self.close()
+                return self._rpc_once(method, payload)
+
+    def _rpc_once(self, method: str, payload: Any) -> Any:
         ws = self._socket()
         self._next_rpc_id += 1
         rid = str(self._next_rpc_id)
@@ -142,12 +161,16 @@ class T3Client:
         model_selection: dict,
         runtime_mode: str = "approval-required",
         interaction_mode: str = "default",
+        command_id: str | None = None,
+        message_id: str | None = None,
+        generate_title: bool = False,
     ) -> dict:
         """Create a thread in the project root and send its first message."""
         return self.rpc(
             "orchestration.launchThread",
             {
-                "commandId": new_id(),
+                "commandId": command_id or new_id(),
+                "generateTitle": generate_title,
                 "creationSource": "mobile",
                 "projectId": project_id,
                 "title": title,
@@ -155,19 +178,21 @@ class T3Client:
                 "runtimeMode": runtime_mode,
                 "interactionMode": interaction_mode,
                 "workspaceStrategy": {"type": "root"},
-                "initialMessage": {"messageId": new_id(), "text": text, "attachments": []},
+                "initialMessage": {"messageId": message_id or new_id(), "text": text, "attachments": []},
             },
         )
 
-    def send_message(self, thread_id: str, text: str, queue: bool = False) -> dict:
+    def send_message(self, thread_id: str, text: str, queue: bool = False,
+                     command_id: str | None = None, message_id: str | None = None) -> dict:
         """Send a user message, as the composer does. `queue` waits for the active run."""
         return self.dispatch(
             {
                 "type": "message.dispatch",
+                "commandId": command_id or new_id(),
                 "createdBy": "user",
                 "creationSource": "mobile",
                 "threadId": thread_id,
-                "messageId": new_id(),
+                "messageId": message_id or new_id(),
                 "text": text,
                 "attachments": [],
                 **({} if queue else {"deliveryIntent": "auto"}),
@@ -178,22 +203,41 @@ class T3Client:
     def delete_thread(self, thread_id: str) -> dict:
         return self.dispatch({"type": "thread.delete", "threadId": thread_id})
 
-    def respond_approval(self, thread_id: str, request_id: str, decision: str) -> dict:
+    def stop_thread(self, thread_id: str, command_id: str | None = None) -> dict:
+        """What the web app's Stop sends when the server has the threadStop capability."""
+        return self.dispatch({"type": "thread.stop", "commandId": command_id or new_id(),
+                              "threadId": thread_id})
+
+    def interrupt_run(self, thread_id: str, run_id: str, command_id: str | None = None) -> dict:
+        """Stop for servers without threadStop: interrupt the active run, hold the queue."""
+        return self.dispatch({"type": "run.interrupt", "commandId": command_id or new_id(),
+                              "threadId": thread_id, "runId": run_id, "holdQueue": True})
+
+    def visit_thread(self, thread_id: str, visited_at: str) -> dict:
+        """Mark the thread read, as opening it in the app does."""
+        return self.dispatch({"type": "thread.visit", "threadId": thread_id,
+                              "visitedAt": visited_at, "opened": True})
+
+    def respond_approval(self, thread_id: str, request_id: str, decision: str,
+                         command_id: str | None = None) -> dict:
         """decision: accept | acceptForSession | acceptAlways | decline | cancel"""
         return self.dispatch(
             {
                 "type": "runtime-request.respond",
+                "commandId": command_id or new_id(),
                 "threadId": thread_id,
                 "requestId": request_id,
                 "decision": decision,
             }
         )
 
-    def respond_user_input(self, thread_id: str, request_id: str, answers: dict) -> dict:
+    def respond_user_input(self, thread_id: str, request_id: str, answers: dict,
+                           command_id: str | None = None) -> dict:
         """answers: {question id: option label, or a list of labels for multiSelect}"""
         return self.dispatch(
             {
                 "type": "runtime-request.respond",
+                "commandId": command_id or new_id(),
                 "threadId": thread_id,
                 "requestId": request_id,
                 "answers": answers,
@@ -203,21 +247,25 @@ class T3Client:
     def pending_requests(self, thread_id: str) -> list[dict]:
         """Pending approvals and questions, joined the way the web app does
         (client-runtime derivePendingThreadRequests)."""
-        proj = self.thread_snapshot(thread_id)["projection"]
-        items = proj["turnItems"]
-        out = []
-        for req in proj["runtimeRequests"]:
-            if req["status"] != "pending" or req["kind"] in ("auth_refresh", "dynamic_tool_call"):
-                continue
-            want = "user_input_request" if req["kind"] == "user_input" else "approval_request"
-            item = next(
-                (i for i in reversed(items) if i.get("type") == want and i.get("requestId") == req["id"]),
-                None,
-            )
-            if req["kind"] == "user_input" and item is None:
-                continue
-            out.append({"request": req, "item": item})
-        return out
+        return pending_requests_from(self.thread_snapshot(thread_id)["projection"])
+
+
+def pending_requests_from(proj: dict) -> list[dict]:
+    """[{request, item}] for each pending request in a thread projection."""
+    items = proj["turnItems"]
+    out = []
+    for req in proj["runtimeRequests"]:
+        if req["status"] != "pending" or req["kind"] in ("auth_refresh", "dynamic_tool_call"):
+            continue
+        want = "user_input_request" if req["kind"] == "user_input" else "approval_request"
+        item = next(
+            (i for i in reversed(items) if i.get("type") == want and i.get("requestId") == req["id"]),
+            None,
+        )
+        if req["kind"] == "user_input" and item is None:
+            continue
+        out.append({"request": req, "item": item})
+    return out
 
 
 def _q(s: str) -> str:
@@ -276,7 +324,7 @@ class _WebSocket:
         while len(self._buf) < n:
             chunk = self.sock.recv(max(65536, n - len(self._buf)))
             if not chunk:
-                raise T3Error("WebSocket closed")
+                raise T3SocketError("WebSocket closed")
             self._buf += chunk
         out, self._buf = self._buf[:n], self._buf[n:]
         return out
@@ -317,7 +365,7 @@ class _WebSocket:
             if opcode == 0xA:
                 continue
             if opcode == 0x8:
-                raise T3Error(f"WebSocket closed by server: {data[2:].decode(errors='replace')}")
+                raise T3SocketError(f"WebSocket closed by server: {data[2:].decode(errors='replace')}")
             parts.append(data)
             if fin:
                 return b"".join(parts).decode()

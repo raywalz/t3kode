@@ -179,27 +179,48 @@ Then dispatch:
 Both verified live: a declined file write (the agent replied "DECLINED" and no
 file was created), and a two-option question answered with the first label.
 
-Note: in `approval-required` mode, the agent ran `echo` without asking. Read-only
-commands seem to be auto-approved, so a test approval needs something like a
-file write.
+### Retries are safe with a stable `commandId`
+
+T3 keeps a receipt per `commandId`. Sending the same command ID again returns the
+original result (`replayed: true` on the server side) instead of running the
+command twice (`apps/server/src/orchestration-v2/Orchestrator.ts`). The bridge
+derives command and message IDs from the device's `client_msg_id`, so a retried
+tap can't send twice.
 
 ### Other commands the client will want
 
-- Stop: `{"type": "thread.stop", "threadId"}` stops the thread and its delegated tasks.
-  `{"type": "run.interrupt", "threadId", "runId", "holdQueue": true}` is what the
-  web app's stop button sends for the active run.
+- Stop: when the environment descriptor has `capabilities.threadStop`, the web app sends
+  `{"type": "thread.stop", "threadId"}`, which stops the thread and its delegated tasks.
+  Without it, it sends `{"type": "run.interrupt", "threadId", "runId", "holdQueue": true}`
+  for the active run.
+- Mark read: `{"type": "thread.visit", "threadId", "visitedAt": <ISO time>, "opened": true}`
+  moves the read watermark (`lastVisitedAt` in the shell), the same as opening the thread in the app.
 - Delete (test cleanup only): `{"type": "thread.delete", "threadId"}`.
-- Mark read: `{"type": "thread.visit", ...}` (not yet checked).
 
-## Change notifications (not yet tried)
+### What `creationSource` does
+
+It's recorded on every message, but the apps don't display it for your own
+messages. Behaviourally, only `web` and `mobile` user messages release a queue
+that was held after a stop or failure (`Orchestrator.ts`, `sentByUserFromClient`).
+The bridge sends `mobile`, so it behaves like the apps.
+
+### Runtime mode matters for approvals
+
+A thread only asks for approvals if its `runtimeMode` calls for them. Even then,
+the agent ran read-only commands such as `echo` without asking. A file write
+outside the workspace did ask (with `reason: "Path is outside allowed working directories"`).
+
+## Change notifications (not used yet)
 
 `orchestration.subscribeShell` (`{afterSequence?}`) and
 `orchestration.subscribeThread` are streaming RPCs (Chunk messages). The
 server wraps the protocol in an output window (`withOutputWindow`), so stream
 consumers probably need to send `Ack`s. The bridge could use `subscribeShell`
 to learn when turns finish instead of polling the snapshot, which also gives a
-clean trigger for generating suggestions. Until that's built, polling
-`/api/orchestration/shell` every few seconds works.
+clean trigger for generating suggestions. The bridge polls
+`/api/orchestration/shell` instead: every 2 s while something runs or a device is
+active, every 20 s otherwise. The trade-off: polling is simpler and resyncs for
+free after restarts, but it re-downloads the snapshot and lags by up to one interval.
 
 ## Not used
 

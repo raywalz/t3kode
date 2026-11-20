@@ -12,12 +12,29 @@ Status: experimental.
 - **`t3.koplugin`** (runs in KOReader): thread list, conversation view, tap-to-reply
   (multiple choice), optional on-screen keyboard.
 
-## Trying the API test
+## Running the bridge
 
 Needs Python 3.12 and a running T3 Code server. There are no dependencies.
 
 ```sh
-cp .env.example .env    # then fill in T3_TOKEN (see the comment in the file)
+cp .env.example .env    # fill in T3_TOKEN, BRIDGE_TOKEN, and optionally SUGGEST_*
+cd bridge && python3 -m t3bridge
+```
+
+Try it from the same machine:
+
+```sh
+curl -H "authorization: Bearer $BRIDGE_TOKEN" http://127.0.0.1:8787/v1/threads
+```
+
+The device API is described in [docs/bridge-api.md](docs/bridge-api.md). Run the
+tests with `cd bridge && python3 -m unittest discover -s tests`.
+
+## Trying the API test
+
+A standalone check of T3's own API, without the bridge:
+
+```sh
 python3 bridge/api_test.py                         # read-only: lists threads
 python3 bridge/api_test.py --project <id|title>    # creates, messages, reads, deletes a test thread
 python3 bridge/api_test.py --project <id|title> --requests   # also answers an approval and a question
