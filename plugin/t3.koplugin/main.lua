@@ -852,10 +852,12 @@ end
 function T3:typeReply(view)
     local typed = str(view.typed) or "message"
     local p = type(view.pending) == "table" and view.pending or nil
-    local title = _("Reply")
-    if typed == "answer" and p then title = str(p.text) or _("Answer") end
+    -- The box covers the thread, so its title bar names the thread; a question being
+    -- answered goes under it.
+    local question = typed == "answer" and p and (str(p.text) or _("Answer")) or nil
     self:compose{
-        title = title,
+        title = str(view.title) or _("Reply"),
+        description = question,
         hint = typed == "answer" and _("Your answer") or _("Message"),
         send_text = _("Send"),
         on_send = function(text)
@@ -1007,10 +1009,9 @@ function T3:enterSecret(view)
     dialog:onShowKeyboard()
 end
 
---- A text box that grows with its text (up to the space above the keyboard, then it
---- scrolls). While it's open, background checks don't redraw anything over it.
-local COMPOSE_MIN_LINES = 4
-
+--- A text box that fills the screen (full width, down to the keyboard). The thread behind it is
+--- held still while it's open (background checks don't redraw over it), so there's
+--- nothing worth leaving visible.
 function T3:compose(o)
     local dialog
     -- Cancel, an optional extra button (o.extra), then Send.
@@ -1029,64 +1030,14 @@ function T3:compose(o)
             o.on_send(text)
         end,
     })
-    local function textBox()
-        local w = dialog._input_widget and dialog._input_widget.text_widget
-        local inner = w and (w.text_widget or w)
-        if inner and inner.getAllLineCount and inner.getVisLineCount and inner.getLineHeight then
-            return inner
-        end
-    end
-    -- KOReader sizes the box only when it's built, so resizing means rebuilding it.
-    -- Like InputDialog:reinit(), minus its full-screen flash. `height` nil: fit the text.
-    local function rebuild(height, quiet)
-        dialog._t3_rebuilding = true
-        -- Before it's first shown, lay it out for the keyboard that's about to appear.
-        local visible = quiet or dialog:isKeyboardVisible()
-        dialog.input = dialog:getInputText()
-        dialog:onClose() -- remembers the cursor position for init()
-        dialog._input_widget:onCloseWidget()
-        dialog:free()
-        dialog.text_height = height
-        dialog.keyboard_visible = visible and true or false
-        dialog:init()
-        if dialog.keyboard_visible and not quiet then dialog:onShowKeyboard() end
-        dialog._t3_rebuilding = nil
-        if not quiet then UIManager:setDirty("all", "ui") end
-    end
-    local function minHeight()
-        local box = textBox()
-        return box and COMPOSE_MIN_LINES * box:getLineHeight()
-    end
     dialog = InputDialog:new{
         title = o.title,
+        description = o.description,
         input = "",
         input_hint = o.hint,
         allow_newline = true,
-        strike_callback = function()
-            if not dialog or dialog._t3_rebuilding or dialog._t3_check_queued then return end
-            dialog._t3_check_queued = true
-            UIManager:nextTick(function()
-                dialog._t3_check_queued = nil
-                local box = textBox()
-                if not box then return end
-                local all, visible = box:getAllLineCount(), box:getVisLineCount()
-                if all <= COMPOSE_MIN_LINES then
-                    -- Short text keeps the fixed four-line box: no resizing, no redraws.
-                    if visible ~= COMPOSE_MIN_LINES then
-                        dialog._t3_full = nil
-                        rebuild(minHeight())
-                    end
-                elseif all > visible and not dialog._t3_full then
-                    rebuild(nil)
-                    box = textBox()
-                    -- Still more lines than fit: it's as tall as the screen allows; scroll now.
-                    dialog._t3_full = box and box:getAllLineCount() > box:getVisLineCount() or nil
-                elseif all < visible then
-                    dialog._t3_full = nil
-                    rebuild(nil) -- shrink back after deleting lines
-                end
-            end)
-        end,
+        width = Device.screen:getWidth(),
+        use_available_height = true,
         buttons = { row },
     }
     dialog.onCloseWidget = function(d)
@@ -1095,8 +1046,6 @@ function T3:compose(o)
         self:endTyping(d._t3_sent)
     end
     self.compose_dialog = dialog
-    -- Start at four lines (sized before it's shown, so it costs no extra redraw).
-    rebuild(minHeight(), true)
     self.typing = true
     UIManager:show(dialog)
     dialog:onShowKeyboard()
