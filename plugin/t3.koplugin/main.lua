@@ -558,19 +558,40 @@ local function placeImages(html, have)
     end))
 end
 
-local function composeHtml(view, have)
+local ANCHOR = "t3:anchor"
+
+--- The entry to open the thread at: the agent's latest reply when it's the last
+--- thing in the thread, so a long reply is read from its start. With `old` (the view
+--- being replaced), only when that reply is new or the turn has just ended.
+local function anchorIndex(view, old)
+    local entries = view.entries or {}
+    local last = entries[#entries]
+    if not last or last.role ~= "agent" then return nil end
+    if old and old.state == "working" and view.state ~= "working" then return #entries end
+    if old then
+        local seen = old.entries and old.entries[#old.entries]
+        if seen and type(seen.o) == "number" and type(last.o) == "number" and last.o <= seen.o then
+            return nil
+        end
+    end
+    return #entries
+end
+
+local function composeHtml(view, have, anchor)
     local parts = {}
     if view.more_before == true then
         table.insert(parts, '<div class="more"><a href="t3:older">' .. esc(_("⋯ Show earlier messages")) .. "</a></div>")
     end
-    for _i, e in ipairs(view.entries or {}) do
+    for i, e in ipairs(view.entries or {}) do
         local role = str(e.role) or "note"
         local body = str(e.html) or ("<p>" .. esc(str(e.text)) .. "</p>")
         body = placeImages(body, have or {})
         local label = ROLE_LABEL[role]
         if role == "fold" then label = nil end
+        label = label and esc(label)
+        if label and i == anchor then label = '<a href="' .. ANCHOR .. '">' .. label .. "</a>" end
         table.insert(parts, '<div class="entry ' .. role .. '">'
-            .. (label and ('<div class="label">' .. esc(label) .. "</div>") or "")
+            .. (label and ('<div class="label">' .. label .. "</div>") or "")
             .. body .. "</div>")
     end
     local state = str(view.state)
@@ -707,13 +728,16 @@ function T3:showThread(view, opts)
     if not page and opts.update and old and not old:atLastPage() then
         page = old:currentPage()
     end
+    -- At the end of the thread, a new reply opens at its start rather than its last page.
+    local anchor = not page and anchorIndex(view, opts.update and old and self.view or nil) or nil
     local viewer
     viewer = ThreadView:new{
         title = str(view.title) or _("Thread"),
-        html = composeHtml(view, self:fetchImages(view)),
+        html = composeHtml(view, self:fetchImages(view), anchor),
         resource_dir = imageDir(),
         buttons = self:threadButtons(view),
         start_page = page,
+        anchor_uri = anchor and ANCHOR or nil,
         refresh = (opts.update and old) and "ui" or "full",
         link_callback = function(uri)
             if uri == "t3:older" then

@@ -57,6 +57,7 @@ local ThreadView = InputContainer:extend{
     font_size = 20,
     start_at_bottom = true,
     start_page = nil, -- open on this page instead (e.g. to stay put after expanding a turn)
+    anchor_uri = nil, -- or on the page with the link to this uri (the start of the agent's reply)
     refresh = "full", -- e-ink refresh on show: "full" flashes to clear ghosting, "ui" doesn't
     close_callback = nil,
     link_callback = nil, -- function(uri) for taps on links in the HTML
@@ -99,6 +100,9 @@ function ThreadView:init()
         end or nil,
     }
     local box = self.html_widget.htmlbox_widget
+    if not self.start_page and self.anchor_uri then
+        self.start_page = self:findLinkPage(self.anchor_uri)
+    end
     if self.start_page and self.start_page > 1 then
         box:setPageNumber(math.min(self.start_page, box.page_count))
         self.html_widget:_updateScrollBar()
@@ -133,6 +137,19 @@ function ThreadView:init()
 
     if Device:hasKeys() then
         self.key_events = { Close = { { Device.input.group.Back } } }
+    end
+end
+
+--- The page with a link to `uri`, searching from the end; nil if there is none.
+function ThreadView:findLinkPage(uri)
+    local box = self.html_widget.htmlbox_widget
+    for n = box.page_count, 1, -1 do
+        local page = box.document:openPage(n)
+        local links = page:getPageLinks()
+        page:close()
+        for _i, link in ipairs(links) do
+            if link.uri == uri then return n end
+        end
     end
 end
 
