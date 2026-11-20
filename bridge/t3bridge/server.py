@@ -138,11 +138,10 @@ def make_handler(bridge: Bridge, device_token: str):
                                       expand=_expand(q))
 
         def r_wait(self, q, short):
-            progress = _flag(q, "progress")
-            changed = bridge.wait_thread(short, _int(q, "v", 0), _int(q, "timeout", 55, 0, MAX_WAIT),
-                                         progress=progress)
-            body = bridge.thread_view(short, after=_int(q, "after"), turns=_int(q, "turns", 3, 1, 50),
-                                      progress=progress, expand=_expand(q))
+            changed, body = bridge.wait_view(
+                short, q.get("v", [""])[0], _int(q, "timeout", 55, 0, MAX_WAIT),
+                progress=_flag(q, "progress"), after=_int(q, "after"),
+                turns=_int(q, "turns", 3, 1, 50), expand=_expand(q))
             body["changed"] = changed
             return body
 

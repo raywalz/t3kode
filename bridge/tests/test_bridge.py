@@ -304,7 +304,7 @@ class BridgeTests(unittest.TestCase):
         result = {}
 
         def waiter():
-            result["changed"] = self.b.wait_thread(self.s2, v, timeout=5)
+            result["changed"], result["view"] = self.b.wait_view(self.s2, v, timeout=5)
 
         th = threading.Thread(target=waiter)
         th.start()
@@ -313,23 +313,32 @@ class BridgeTests(unittest.TestCase):
         self.b.refresh()
         th.join(2)
         self.assertTrue(result.get("changed"))
-        self.assertFalse(self.b.wait_thread(self.s2, self.b.thread_v["t2"], timeout=0.05))
+        self.assertEqual(result["view"]["state"], "done")
+        self.assertFalse(self.b.wait_view(self.s2, result["view"]["v"], timeout=0.05)[0])
+
+    def _add_step(self, n, item_):
+        self.t3.items["t2"] = self.t3.items.get("t2", []) + [item_]
+        self.t3.threads["t2"] = thread("t2", "p2", status="running", itemCount=n,
+                                       updatedAt=f"2026-01-05T00:00:{n:02d}Z")
+        self.b.refresh()
 
     def test_tool_progress_while_working_does_not_wake(self):
-        v = self.b.thread_v["t2"]
-        self.t3.threads["t2"] = thread("t2", "p2", status="running", itemCount=40,
-                                       updatedAt="2026-01-05T00:00:00Z")
-        self.b.refresh()
-        self.assertEqual(self.b.thread_v["t2"], v)
+        v = self.b.thread_view(self.s2)["v"]
+        self._add_step(1, item(1, "command_execution", input="make"))
+        self.assertFalse(self.b.wait_view(self.s2, v, timeout=0.05)[0])
 
     def test_progress_mode_wakes_on_tool_calls(self):
         pv = self.b.thread_view(self.s2, progress=True)["v"]
-        self.t3.threads["t2"] = thread("t2", "p2", status="running", itemCount=41,
-                                       updatedAt="2026-01-06T00:00:00Z")
-        self.b.refresh()
-        self.assertTrue(self.b.wait_thread(self.s2, pv, timeout=0.05, progress=True))
-        v = self.b.thread_view(self.s2)["v"]
-        self.assertFalse(self.b.wait_thread(self.s2, v, timeout=0.05))
+        self._add_step(1, item(1, "command_execution", input="make"))
+        self.assertTrue(self.b.wait_view(self.s2, pv, timeout=0.05, progress=True)[0])
+
+    def test_invisible_updates_do_not_wake(self):
+        """Reasoning and replies still being written change T3's thread but not the screen."""
+        self._add_step(1, item(1, "command_execution", input="make"))
+        pv = self.b.thread_view(self.s2, progress=True)["v"]
+        self._add_step(2, item(2, "reasoning", text="thinking"))
+        self._add_step(3, item(3, "assistant_message", text="partial", streaming=True))
+        self.assertFalse(self.b.wait_view(self.s2, pv, timeout=0.05, progress=True)[0])
 
     def test_failed_suggestions_are_retried_later(self):
         from t3bridge import core
@@ -403,6 +412,7 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.req("/v1/threads/nope")[0], 404)
         self.assertEqual(self.req(f"/v1/threads/{sid}/reply", {})[0], 400)
         status, body = self.req(f"/v1/threads/{sid}/wait?v={view['v']}&timeout=0")
+        self.assertEqual(body["v"], view["v"])
         self.assertEqual((status, body["changed"]), (200, False))
 
 

@@ -55,6 +55,7 @@ local ThreadView = InputContainer:extend{
     font_size = 20,
     start_at_bottom = true,
     start_page = nil, -- open on this page instead (e.g. to stay put after expanding a turn)
+    refresh = "full", -- e-ink refresh on show: "full" flashes to clear ghosting, "ui" doesn't
     close_callback = nil,
     link_callback = nil, -- function(uri) for taps on links in the HTML
     covers_fullscreen = true,
@@ -135,9 +136,14 @@ function ThreadView:currentPage()
     return self.html_widget.htmlbox_widget.page_number
 end
 
+function ThreadView:atLastPage()
+    local box = self.html_widget.htmlbox_widget
+    return box.page_number >= box.page_count
+end
+
 function ThreadView:onShow()
-    -- A full refresh on open clears e-ink ghosting from the previous screen.
-    UIManager:setDirty(self, "full")
+    -- Opening a thread flashes once to clear ghosting; updates to an open thread don't.
+    UIManager:setDirty(self, self.refresh)
     return true
 end
 

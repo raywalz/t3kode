@@ -347,7 +347,7 @@ local ROLE_LABEL = { you = _("You"), agent = _("Agent") }
 
 --- The thread as HTML. Entries arrive pre-rendered from the bridge (`html`);
 --- `text` is the plain fallback for older bridges.
-local function composeHtml(view, show_progress)
+local function composeHtml(view)
     local parts = {}
     if view.more_before == true then
         table.insert(parts, '<div class="more">' .. esc(_("⋯ Earlier messages: tap Older.")) .. "</div>")
@@ -363,9 +363,7 @@ local function composeHtml(view, show_progress)
     end
     local state = str(view.state)
     if state == "working" then
-        local msg = show_progress and _("… Working. New steps appear as they happen.")
-            or _("… Working. This view updates when the turn finishes.")
-        table.insert(parts, '<div class="status">' .. esc(msg) .. "</div>")
+        table.insert(parts, '<div class="status">' .. esc(_("Working…")) .. "</div>")
     elseif state == "failed" then
         table.insert(parts, '<div class="status">' .. esc(_("The last run failed.")) .. "</div>")
     end
@@ -439,16 +437,24 @@ function T3:threadButtons(view)
     return rows
 end
 
-function T3:showThread(view, page)
+--- Show a thread view. `opts.update`: redraw an already open thread quietly (no
+--- e-ink flash), staying on the reader's page unless they were at the end.
+--- `opts.page`: open on this page.
+function T3:showThread(view, opts)
+    opts = opts or {}
     local old = self.viewer
     self.viewer = nil
-    if old then UIManager:close(old) end
+    local page = opts.page
+    if not page and opts.update and old and not old:atLastPage() then
+        page = old:currentPage()
+    end
     local viewer
     viewer = ThreadView:new{
         title = str(view.title) or _("Thread"),
-        html = composeHtml(view, self:showProgress()),
+        html = composeHtml(view),
         buttons = self:threadButtons(view),
         start_page = page,
+        refresh = (opts.update and old) and "ui" or "full",
         link_callback = function(uri)
             local run = uri:match("^t3:run:(%w+)$")
             if run then self:toggleRun(view, run) end
@@ -463,7 +469,9 @@ function T3:showThread(view, page)
     }
     self.viewer = viewer
     self.view = view
+    -- Show the new view before closing the old one, so nothing underneath flashes through.
     UIManager:show(viewer)
+    if old then UIManager:close(old) end
     self:scheduleThreadPoll()
 end
 
@@ -485,7 +493,7 @@ function T3:reloadThread(id, page)
         notify(view)
         return
     end
-    self:showThread(view, page)
+    self:showThread(view, { update = true, page = page })
 end
 
 function T3:stopThreadPoll()
@@ -510,7 +518,7 @@ function T3:scheduleThreadPoll()
                 self:expandParam(view.id))
             if self.view ~= view then return end
             if ok and body.changed == true then
-                self:showThread(body)
+                self:showThread(body, { update = true })
                 return
             end
         end
@@ -525,7 +533,7 @@ function T3:sendReply(view, reply_id)
             return self.api:reply(view.id, reply_id, nil, self:showProgress(), self:expandList(view.id))
         end)
         if ok then
-            self:showThread(result)
+            self:showThread(result, { update = true, page = math.huge })
         else
             notify(result)
             -- A 409 means the buttons were stale; show the current state.
@@ -568,7 +576,7 @@ function T3:typeReply(view)
                             self:expandList(view.id))
                     end)
                     if ok then
-                        self:showThread(result)
+                        self:showThread(result, { update = true, page = math.huge })
                     else
                         notify(result)
                     end
@@ -595,7 +603,7 @@ function T3:showOlder(view, before)
     local older_viewer
     older_viewer = ThreadView:new{
         title = T(_("%1 (earlier)"), str(view.title) or _("Thread")),
-        html = composeHtml(older, false),
+        html = composeHtml(older),
         buttons = {{
             {
                 text = _("Older"),

@@ -17,23 +17,23 @@ labels and sends back IDs.
 
 ## Versions and waiting
 
-Threads and the thread list carry a version `v`. A wait call returns as soon as
-`v` differs from the one you pass, or after `timeout` seconds (max 120) with
-`changed: false`. Versions only change when the screen should change:
+A thread view carries a version `v`: a fingerprint of what the device would draw
+(title, state, entries, the pending request, buttons). A wait call returns as
+soon as the view would look different from the `v` you pass, or after `timeout`
+seconds (max 120) with `changed: false`. T3 updates threads for things the view
+never shows (reasoning, replies still being written), and those don't count as
+changes, so a device never redraws an identical screen.
 
-- the state changes (working → done, a question appears, ...)
-- suggestions arrive
-- the next question of a multi-question request comes up
-- new content arrives while the thread is not working
+By default, new steps in a turn that's still running don't count either: the view
+changes when the turn ends, a question appears, or suggestions arrive. Pass
+`progress=1` to the thread view and the thread wait (and `"progress": true` in the
+reply body) to include the running turn's steps. The device's "Show progress while
+working" setting does this.
 
-By default, new tool calls while the agent works do **not** change `v`. That keeps
-e-ink redraws down. Pass `progress=1` to the thread view, the thread wait, and (as
-`"progress": true`) the reply body to get a version that also changes on every new
-step mid-turn. The device's "Show progress while working" setting does this. Versions reset when the bridge
-restarts, so a different `v` just means "fetch again".
+The thread list has its own counter `v` with the same wait semantics.
 
 To catch up after being offline: call the wait endpoint with the last `v`. It
-returns immediately if anything changed.
+returns immediately if anything visible changed.
 
 ## Endpoints
 

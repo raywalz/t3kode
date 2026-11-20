@@ -6,6 +6,8 @@ works against any object with T3Client's methods, so tests can pass a fake.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import threading
 import time
@@ -72,6 +74,16 @@ def _wake_key(t: dict) -> tuple:
             None if state == "working" else t.get("itemCount"))
 
 
+def _content_version(body: dict, progress: bool) -> str:
+    """Fingerprint of what the device would draw. Without `progress`, a working thread's
+    steps are left out, so new steps don't count as a change until the turn ends."""
+    shown = {k: body[k] for k in ("title", "state", "more_before", "pending", "replies", "typed")}
+    if progress or body["state"] != "working":
+        shown["entries"] = [(e["role"], e["text"], e.get("expanded")) for e in body["entries"]]
+    raw = json.dumps(shown, sort_keys=True, ensure_ascii=False).encode()
+    return hashlib.sha1(raw).hexdigest()[:12]
+
+
 class Bridge:
     def __init__(self, client, suggester=None, *, poll_fast: float = 2.0, poll_slow: float = 20.0):
         self.client = client
@@ -83,8 +95,7 @@ class Bridge:
         self.list_v = 0
         self.shell: dict | None = None
         self.threads: dict[str, dict] = {}  # long id -> shell thread
-        self.thread_v: dict[str, int] = {}  # changes when the screen should redraw
-        self.thread_pv: dict[str, int] = {}  # changes on any update, including mid-turn progress
+        self.thread_pv: dict[str, int] = {}  # bumps on any update; wakes wait_view to re-check
         self.sigs: dict[str, tuple] = {}
         self.wake_keys: dict[str, tuple] = {}
         self.by_short: dict[str, str] = {}  # short id -> long id (threads and projects)
@@ -171,9 +182,8 @@ class Bridge:
         self._prefetch(self._recent_per_project(3) if first else touched)
 
     def _bump(self, tid: str) -> None:
-        """A change worth a redraw (caller holds self.cond). Also counts as progress."""
+        """Something about the thread changed (caller holds self.cond)."""
         self.seq += 1
-        self.thread_v[tid] = self.seq
         self.thread_pv[tid] = self.seq
 
     def _top_level(self, t: dict) -> bool:
@@ -286,7 +296,7 @@ class Bridge:
     def thread_view(self, short: str, after: int | None = None, before: int | None = None,
                     turns: int = 3, visit: bool = False, progress: bool = False,
                     expand: frozenset[str] = frozenset()) -> dict:
-        """`progress`: report the version that also changes mid-turn (see wait_thread).
+        """`progress`: the version `v` also changes mid-turn (see wait_view).
         `expand`: short ids of finished runs to show unfolded."""
         self.last_device_at = time.monotonic()
         t = self._thread(short)
@@ -319,12 +329,13 @@ class Bridge:
                 log.warning("visit failed: %s", e)
 
         pending_view, replies, typed = self._replies(t, state, cursor)
-        return {
+        body = {
             "id": short, "title": t.get("title") or "Untitled", "state": state,
-            "v": (self.thread_pv if progress else self.thread_v).get(t["id"], 0), "cursor": cursor,
-            "more_before": more_before, "entries": shown,
+            "cursor": cursor, "more_before": more_before, "entries": shown,
             "pending": pending_view, "replies": replies, "typed": typed,
         }
+        body["v"] = _content_version(body, progress)
+        return body
 
     # ---- reply buttons ------------------------------------------------------
 
@@ -430,23 +441,31 @@ class Bridge:
 
     # ---- waiting ------------------------------------------------------------
 
-    def wait_thread(self, short: str, v: int, timeout: float, progress: bool = False) -> bool:
-        """Block until the thread's version differs from `v`. True if it changed.
-        With `progress`, new tool calls and messages during a turn count as changes too."""
-        versions = self.thread_pv if progress else self.thread_v
+    def wait_view(self, short: str, v: str, timeout: float, progress: bool = False,
+                  **view_args) -> tuple[bool, dict]:
+        """Block until the thread view would look different from version `v` (or timeout).
+        Returns (changed, view).
+
+        T3 updates the thread for things the view doesn't show (reasoning, replies still
+        being written), so this re-renders on each update and compares what's displayed.
+        """
         self.last_device_at = time.monotonic()
         tid = self.by_short.get(short)
         if tid is None:
             raise BridgeError(404, "no such thread")
         deadline = time.monotonic() + timeout
-        with self.cond:
-            while versions.get(tid, 0) == v:
-                left = deadline - time.monotonic()
-                if left <= 0:
-                    return False
-                self.cond.wait(left)
-                self.last_device_at = time.monotonic()
-        return True
+        while True:
+            seen = self.thread_pv.get(tid, 0)
+            view = self.thread_view(short, progress=progress, **view_args)
+            if view["v"] != v:
+                return True, view
+            with self.cond:
+                while self.thread_pv.get(tid, 0) == seen:
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        return False, view
+                    self.cond.wait(left)
+            self.last_device_at = time.monotonic()
 
     def wait_list(self, v: int, timeout: float) -> bool:
         self.last_device_at = time.monotonic()
