@@ -561,18 +561,6 @@ local function composeHtml(view, have)
         table.insert(lines, "</div>")
         table.insert(parts, table.concat(lines))
     end
-    -- Suggested replies sit at the very end, so they only take room once you've read down to them.
-    local sugg = {}
-    for i, r in ipairs(view.replies or {}) do
-        if r.kind == "suggestion" and r.enabled ~= false and str(r.label) then
-            table.insert(sugg, '<div class="suggestion"><a href="t3:reply:' .. i .. '">'
-                .. esc(str(r.label)) .. "</a></div>")
-        end
-    end
-    if #sugg > 0 then
-        table.insert(parts, '<div class="suggestions"><div class="label">' .. esc(_("Suggested replies"))
-            .. "</div>" .. table.concat(sugg) .. "</div>")
-    end
     if #parts == 0 then
         return "<p>" .. esc(_("Nothing here yet.")) .. "</p>"
     end
@@ -581,10 +569,39 @@ end
 
 local SHORT_LABELS = { ["c:summarize"] = _("Summarize"), ["c:continue"] = _("Continue"), ["c:stop"] = _("Stop") }
 
+--- The Reply… button: the suggested replies, then Type… to write your own.
+--- With no suggestions it goes straight to typing.
+function T3:showReplyDialog(view, suggestions, can_type)
+    if #suggestions == 0 then return self:typeReply(view) end
+    local dialog
+    local rows = {}
+    for _i, b in ipairs(suggestions) do
+        table.insert(rows, { {
+            text = b.text,
+            enabled = b.enabled,
+            callback = function()
+                UIManager:close(dialog)
+                b.callback()
+            end,
+        } })
+    end
+    table.insert(rows, { {
+        text = _("Type…"),
+        enabled = can_type,
+        callback = function()
+            UIManager:close(dialog)
+            self:typeReply(view)
+        end,
+    } })
+    dialog = ButtonDialog:new{ title = _("Reply"), buttons = rows }
+    UIManager:show(dialog)
+end
+
 function T3:threadButtons(view)
     local rows = {}
     local shortcuts = {}
     local answers = {}
+    local suggestions = {} -- offered by the Reply… button
     for _i, r in ipairs(view.replies or {}) do
         local id = str(r.id)
         local button = {
@@ -595,7 +612,8 @@ function T3:threadButtons(view)
                 self:sendReply(view, id, r.kind == "toggle")
             end,
         }
-        if r.kind == "suggestion" then -- shown at the end of the thread instead (composeHtml)
+        if r.kind == "suggestion" then
+            table.insert(suggestions, button)
         elseif r.kind == "shortcut" then
             table.insert(shortcuts, button)
         elseif r.kind == "secret" then
@@ -612,9 +630,9 @@ function T3:threadButtons(view)
     local typed = str(view.typed) or "message"
     table.insert(rows, {
         {
-            text = _("Type…"),
-            enabled = typed ~= "none",
-            callback = function() self:typeReply(view) end,
+            text = _("Reply…"),
+            enabled = typed ~= "none" or #suggestions > 0,
+            callback = function() self:showReplyDialog(view, suggestions, typed ~= "none") end,
         },
         {
             text = _("Older"),
@@ -659,9 +677,6 @@ function T3:showThread(view, opts)
             if child then return self:openChild(view, child) end
             local image = uri:match("^t3:img:(%w+)$")
             if image then return self:showImage(image) end
-            local n = uri:match("^t3:reply:(%d+)$")
-            local reply = n and view.replies and view.replies[tonumber(n)]
-            if reply then return self:sendReply(view, str(reply.id), false) end
         end,
         close_callback = function()
             if self.viewer == viewer then
