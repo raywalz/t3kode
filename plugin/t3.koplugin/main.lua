@@ -36,6 +36,10 @@ local POLL_ACTIVE = 15 -- seconds, while a thread is working or waiting for you
 local POLL_PROGRESS = 10 -- seconds, while working with "Show progress while working" on
 local POLL_IDLE = 60 -- seconds, otherwise
 local POLL_LIST = 30
+-- The link at the top of a thread loads this many earlier turns at a time, up
+-- to MAX_TURNS in all; beyond that, earlier turns open on a screen of their own.
+local LOAD_TURNS = 3
+local MAX_TURNS = 30
 
 local STATE_LABEL = {
     needs_you = _("needs you"),
@@ -773,9 +777,11 @@ end
 -- ---------------------------------------------------------------------------
 -- thread view
 
-function T3:openThread(id, page)
+--- `pin`: reopen with the earlier turns that were loaded (see T3:activePin).
+function T3:openThread(id, page, pin)
     local ok, view = withBusy(_("Loading…"), function()
-        return self.api:thread(id, { visit = 1, progress = self:progressParam(), expand = self:expandParam(id) })
+        return self:fetchView(id, { visit = 1, progress = self:progressParam(), expand = self:expandParam(id) },
+            pin)
     end)
     if not ok then
         notify(view)
@@ -887,6 +893,22 @@ local function placeImages(html, have)
 end
 
 local ANCHOR = "t3:anchor"
+local SEAM = "t3:seam" -- where the turns already on screen start, after loading earlier ones
+
+local function turnCount(view)
+    local n = 0
+    for _i, e in ipairs(view.entries or {}) do
+        if e.role == "you" then n = n + 1 end
+    end
+    return n
+end
+
+--- The first labelled entry at or after cursor `o`: the seam's link goes on its label.
+local function seamIndex(view, o)
+    for i, e in ipairs(view.entries or {}) do
+        if type(e.o) == "number" and e.o >= o and ROLE_LABEL[e.role] then return i end
+    end
+end
 
 --- The entry to open the thread at: the agent's latest reply when it's the last
 --- thing in the thread, so a long reply is read from its start. With `old` (the view
@@ -905,10 +927,12 @@ local function anchorIndex(view, old)
     return #entries
 end
 
-local function composeHtml(view, have, anchor, page_break_you)
+local function composeHtml(view, have, anchor, page_break_you, seam)
     local parts = {}
     if view.more_before == true then
-        table.insert(parts, '<div class="more"><a href="t3:older">' .. esc(_("⋯ Show earlier messages")) .. "</a></div>")
+        local text = turnCount(view) >= MAX_TURNS and _("⋯ Earlier messages (open separately)")
+            or _("⋯ Show earlier messages")
+        table.insert(parts, '<div class="more"><a href="t3:older">' .. esc(text) .. "</a></div>")
     end
     for i, e in ipairs(view.entries or {}) do
         local role = str(e.role) or "note"
@@ -918,6 +942,7 @@ local function composeHtml(view, have, anchor, page_break_you)
         if role == "fold" then label = nil end
         label = label and esc(label)
         if label and i == anchor then label = '<a href="' .. ANCHOR .. '">' .. label .. "</a>" end
+        if label and i == seam then label = '<a href="' .. SEAM .. '">' .. label .. "</a>" end
         -- Optionally each of your messages starts a new page, so a turn reads from the top.
         local newpage = (page_break_you and role == "you" and i > 1) and " newpage" or ""
         table.insert(parts, '<div class="entry ' .. role .. newpage .. '">'
@@ -1174,32 +1199,92 @@ function T3:showBrowserTab(view, tab, old_viewer)
     if old_viewer then UIManager:close(old_viewer) end
 end
 
+-- Earlier turns loaded in place. The link at the top of a thread loads more above
+-- it, and the view is then "pinned": refreshes fetch everything from its first
+-- entry on (`after`), so the turns stay and page numbers keep meaning the same place.
+-- Once the reader pages down to the end, the next refresh goes back to the usual
+-- recent turns, so the extra ones drop off while nothing above is on screen.
+
+--- The pin to fetch thread `id` with, or nil for the usual window.
+function T3:activePin(id)
+    local pin = self.pin
+    if pin and pin.id == id and not self.pin_at_bottom then return pin end
+end
+
+--- Fetch a thread view, starting at `pin`'s entry if given.
+function T3:fetchView(id, params, pin)
+    if pin then params.after = pin.o - 1 end
+    local ok, body = self.api:thread(id, params)
+    if ok and pin then self:applyPin(body, pin) end
+    return ok, body
+end
+
+--- A view fetched with `after` says nothing is before it; say what the pin knows.
+function T3:applyPin(body, pin)
+    body.more_before = pin.more_before
+    body._pin = pin
+end
+
+--- The link at the top of the open thread: load the turns before it in place.
+function T3:loadEarlier(view)
+    if self.view ~= view or view.more_before ~= true then return end
+    local first = view.entries and view.entries[1] and view.entries[1].o
+    if type(first) ~= "number" then return end
+    if turnCount(view) >= MAX_TURNS then return self:showOlder(view, first) end
+    local expand = self:expandParam(view.id)
+    local ok, body = withBusy(_("Loading…"), function()
+        local ok_older, older = self.api:thread(view.id, { before = first, turns = LOAD_TURNS, expand = expand })
+        if not ok_older then return false, older end
+        local top = older.entries and older.entries[1] and older.entries[1].o
+        if type(top) ~= "number" then return false, _("There are no earlier messages.") end
+        -- Then the whole view from there, so its version matches what later polls see.
+        local pin = { id = view.id, o = top, more_before = older.more_before == true }
+        return self:fetchView(view.id, { progress = self:progressParam(), expand = expand }, pin)
+    end)
+    if not ok then
+        notify(body)
+        return
+    end
+    if self.view ~= view then return end -- closed meanwhile
+    self:showThread(body, { update = true, seam = first })
+end
+
 --- Show a thread view. `opts.update`: redraw an already open thread quietly (no
 --- e-ink flash), staying on the reader's page unless they were at the end.
---- `opts.page`: open on this page.
+--- `opts.page`: open on this page. `opts.seam`: open on the page just above the
+--- entry with this cursor (after loading earlier turns).
 function T3:showThread(view, opts)
     opts = opts or {}
     local old = self.viewer
     self.viewer = nil
+    self.pin = view._pin
+    if opts.seam or not opts.update then self.pin_at_bottom = false end
+    local seam = opts.seam and seamIndex(view, opts.seam)
     local page = opts.page
-    if not page and opts.update and old and not old:atLastPage() then
+    if not page and not opts.seam and opts.update and old and not old:atLastPage() then
         page = old:currentPage()
     end
     -- At the end of the thread, a new reply opens at its start rather than its last page.
-    local anchor = not page and anchorIndex(view, opts.update and old and self.view or nil) or nil
+    local anchor = not page and not opts.seam
+        and anchorIndex(view, opts.update and old and self.view or nil) or nil
     local viewer
     viewer = ThreadView:new{
         title = str(view.title) or _("Thread"),
-        html = composeHtml(view, self:fetchImages(view), anchor, self:pageBreakYou()),
+        html = composeHtml(view, self:fetchImages(view), anchor, self:pageBreakYou(), seam),
         resource_dir = imageDir(),
         buttons = self:threadButtons(view),
-        start_page = page,
+        start_page = page or (opts.seam and not seam and 1 or nil),
         anchor_uri = anchor and ANCHOR or nil,
+        above_uri = seam and SEAM or nil,
+        wide_links = { ["t3:older"] = true },
         refresh = (opts.update and old) and "ui" or "full",
         title_hold_callback = function() self:viewActions(view) end,
+        scroll_callback = function(at_end)
+            if self.viewer == viewer then self.pin_at_bottom = at_end end
+        end,
         link_callback = function(uri)
             if uri == "t3:older" then
-                return self:showOlder(view, view.entries and view.entries[1] and view.entries[1].o)
+                return UIManager:nextTick(function() self:loadEarlier(view) end)
             end
             local run = uri:match("^t3:run:(%w+)$")
             if run then return self:toggleRun(view, run) end
@@ -1214,6 +1299,7 @@ function T3:showThread(view, opts)
                 self:stopThreadPoll()
                 self.viewer = nil
                 self.view = nil
+                self.pin = nil
                 if self:returnToParent(view) then return end
                 self:refreshListOnReturn()
             end
@@ -1239,7 +1325,8 @@ function T3:openChild(parent_view, child_id)
         return
     end
     self.thread_stack = self.thread_stack or {}
-    table.insert(self.thread_stack, { id = parent_view.id, page = self.viewer and self.viewer:currentPage() })
+    table.insert(self.thread_stack, { id = parent_view.id, page = self.viewer and self.viewer:currentPage(),
+        pin = self:activePin(parent_view.id) })
     self:showThread(view)
 end
 
@@ -1252,13 +1339,14 @@ function T3:returnToParent(view)
         parent = { id = view.parent.id } -- opened some other way: still go up a level
     end
     if not parent then return false end
-    UIManager:nextTick(function() self:openThread(parent.id, parent.page) end)
+    UIManager:nextTick(function() self:openThread(parent.id, parent.page, parent.pin) end)
     return true
 end
 
 function T3:reloadThread(id, page)
     local ok, view = withBusy(_("Refreshing…"), function()
-        return self.api:thread(id, { progress = self:progressParam(), expand = self:expandParam(id) })
+        return self:fetchView(id, { progress = self:progressParam(), expand = self:expandParam(id) },
+            self:activePin(id))
     end)
     if not ok then
         notify(view)
@@ -1285,9 +1373,11 @@ function T3:scheduleThreadPoll()
         self.thread_poll = nil
         if self.view ~= view then return end
         if NetworkMgr:isConnected() then
+            local pin = self:activePin(view.id)
             local ok, body = self.api:changedSince(view.id, view.v, self:progressParam(),
-                self:expandParam(view.id))
+                self:expandParam(view.id), pin and pin.o - 1 or nil)
             if self.view ~= view then return end
+            if ok and pin then self:applyPin(body, pin) end
             if ok and body.changed == true then
                 if self.typing then
                     -- Don't draw over the text box; show it when the box closes.
@@ -1598,6 +1688,7 @@ function T3:showOlder(view, before)
         title = T(_("%1 (earlier)"), str(view.title) or _("Thread")),
         html = composeHtml(older, self:fetchImages(older), nil, self:pageBreakYou()),
         resource_dir = imageDir(),
+        wide_links = { ["t3:older"] = true },
         link_callback = function(uri)
             if uri == "t3:older" then
                 UIManager:close(older_viewer)

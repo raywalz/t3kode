@@ -162,9 +162,10 @@ function Api:thread(id, params)
 end
 
 --- Quick check (no waiting) whether the thread changed since version v.
-function Api:changedSince(id, v, progress, expand)
+--- `after`: the view starts after this cursor (see Api:thread), not at the default window.
+function Api:changedSince(id, v, progress, expand, after)
     return self:request("GET", "/v1/threads/" .. id .. "/wait",
-        { v = v, timeout = 0, progress = progress, expand = expand })
+        { v = v, timeout = 0, progress = progress, expand = expand, after = after })
 end
 
 function Api:listChangedSince(v, limit)

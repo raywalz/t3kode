@@ -49,8 +49,8 @@ hr { border: 0; border-top: 1px solid #888; margin: 0.5em 0; }
 .files ul { margin: 0.2em 0 0 0; padding-left: 1.2em; }
 .prs { border: 1px solid #888; padding: 0.3em 0.5em; margin-top: 0.6em; font-size: 0.9em; }
 .prs p { margin: 0 0 0.2em 0; }
-.more { font-size: 0.85em; text-align: center; margin-bottom: 0.8em; }
-.more a { text-decoration: underline; }
+.more { text-align: center; margin-bottom: 0.9em; }
+.more a { display: block; border: 2px solid black; padding: 0.7em 0.5em; font-weight: bold; }
 img { max-width: 100%; }
 a { color: black; text-decoration: none; }
 .fold { border: 1px solid #888; padding: 0.25em 0.5em; color: #333; font-size: 0.9em; }
@@ -65,6 +65,9 @@ local ThreadView = InputContainer:extend{
     start_at_bottom = true,
     start_page = nil, -- open on this page instead (e.g. to stay put after expanding a turn)
     anchor_uri = nil, -- or on the page with the link to this uri (the start of the agent's reply)
+    above_uri = nil, -- or on the page before the one with this link (what's just above it)
+    scroll_callback = nil, -- function(at_end) after each page turn
+    wide_links = nil, -- { [uri] = true }: links drawn as a box (CSS), tappable across its whole row
     refresh = "full", -- e-ink refresh on show: "full" flashes to clear ghosting, "ui" doesn't
     close_callback = nil,
     title_hold_callback = nil, -- function() for a hold on the title bar
@@ -108,8 +111,14 @@ function ThreadView:init()
         end or nil,
     }
     local box = self.html_widget.htmlbox_widget
+    self:hookScrolling()
+    self:hookWideLinks()
     if not self.start_page and self.anchor_uri then
         self.start_page = self:findLinkPage(self.anchor_uri)
+    end
+    if not self.start_page and self.above_uri then
+        local n = self:findLinkPage(self.above_uri)
+        self.start_page = n and math.max(1, n - 1) or 1
     end
     if self.start_page and self.start_page > 1 then
         box:setPageNumber(math.min(self.start_page, box.page_count))
@@ -151,6 +160,36 @@ function ThreadView:init()
             -- The title bar's own buttons (close) still get their taps and holds first.
             HoldTitle = { GestureRange:new{ ges = "hold", range = function() return self.titlebar.dimen end } },
         }
+    end
+end
+
+--- Tell the owner after each page turn whether it reached the last page.
+function ThreadView:hookScrolling()
+    local w = self.html_widget
+    local box = w.htmlbox_widget
+    local scrollText = w.scrollText
+    w.scrollText = function(widget, direction)
+        scrollText(widget, direction)
+        if self.scroll_callback then self.scroll_callback(box.page_number >= box.page_count) end
+    end
+end
+
+--- MuPDF only makes a link's words tappable. For `wide_links`, a tap anywhere in the
+--- row of the box around them counts too: the box's padding is about a line high.
+function ThreadView:hookWideLinks()
+    if not self.wide_links then return end
+    local box = self.html_widget.htmlbox_widget
+    local getLinkByPosition = box.getLinkByPosition
+    box.getLinkByPosition = function(widget, pos)
+        local link = getLinkByPosition(widget, pos)
+        if link then return link end
+        local page = widget.document:openPage(widget.page_number)
+        local links = page:getPageLinks()
+        page:close()
+        for _i, l in ipairs(links) do
+            local pad = l.y1 - l.y0
+            if self.wide_links[l.uri] and pos.y >= l.y0 - pad and pos.y < l.y1 + pad then return l end
+        end
     end
 end
 
