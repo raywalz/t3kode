@@ -20,6 +20,7 @@ local InputDialog = require("ui/widget/inputdialog")
 local LuaSettings = require("luasettings")
 local Menu = require("ui/widget/menu")
 local NetworkMgr = require("ui/network/manager")
+local TitleBar = require("ui/widget/titlebar")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
@@ -1724,7 +1725,17 @@ function T3:chooseProject()
         notify(_("No projects."))
         return
     end
-    dialog = ButtonDialog:new{ title = _("New thread in…"), buttons = rows }
+    dialog = ButtonDialog:new{ buttons = rows }
+    -- The title goes in a title bar so there's an X in the corner to close the list.
+    dialog:addWidget(TitleBar:new{
+        width = dialog:getAddedWidgetAvailableWidth(),
+        align = "left",
+        title = _("New thread in…"),
+        button_padding = 0,
+        close_callback = function() UIManager:close(dialog) end,
+        show_parent = dialog,
+        not_focusable = true,
+    })
     UIManager:show(dialog)
 end
 
