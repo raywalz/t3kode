@@ -1,0 +1,3 @@
+# Start KOReader when the Kobo boots. See autostart.sh for how to install and undo.
+# rcS runs `udevadm trigger` right after it starts Nickel, so this "add" fires then.
+ACTION=="add", KERNEL=="loop0", RUN+="/usr/local/koreader-autostart/autostart.sh"

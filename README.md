@@ -118,6 +118,10 @@ To update the plugin, copy the new files over it, then choose **Reload T3 plugin
 the list's menu button, or hold an open thread's title). It loads the new code without
 restarting KOReader and reopens what you had open. Gesture action: "Reload T3 plugin".
 
+On a Kobo, [contrib/kobo-autostart](contrib/kobo-autostart/autostart.sh) starts
+KOReader at boot, so you skip Nickel's home screen. The install steps are at the top
+of the script.
+
 Your KOReader gestures keep working inside the plugin: edge swipes for brightness
 and warmth, multiswipes, corner taps, and swiping down from the top for KOReader's
 menu. Swipes go to your gestures first; taps and holds only when they miss a button,
