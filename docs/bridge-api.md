@@ -174,6 +174,8 @@ uses it. Returns the new thread view. Choosing the current model changes nothing
   their answers, and messages sent by agents rather than you.
 - Default window: everything from the `turns`-th most recent message of yours.
   `more_before` says whether older entries exist. Fetch them with `before=<o of the first entry>`.
+  Threads too big for T3's whole transcript load their history from T3 a page at a
+  time as you go back, so going back through those can take a moment longer.
 - `after=<cursor>` returns only entries newer than a cursor (`cursor` is the `o` of the last entry).
 - `visit=1` marks the thread read in T3 (pass it when the user opens the thread).
 - When the thread has just finished, the call waits up to 12 s for suggestions

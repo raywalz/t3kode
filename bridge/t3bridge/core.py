@@ -61,6 +61,16 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _dedupe(rows: list[dict]) -> list[dict]:
+    """Rows in order, each item once: where pages overlap, the newer copy wins."""
+    seen, out = set(), []
+    for r in reversed(rows):
+        if r["item"]["id"] not in seen:
+            seen.add(r["item"]["id"])
+            out.append(r)
+    return out[::-1]
+
+
 def _signature(t: dict) -> tuple:
     """Changes whenever anything about the thread changes (cache key)."""
     pending = t.get("pendingRuntimeRequest") or {}
@@ -188,6 +198,9 @@ class Bridge:
         self.wake_keys: dict[str, tuple] = {}
         self.by_short: dict[str, str] = {}  # short id -> long id (threads and projects)
         self.entries: dict[str, tuple] = {}  # long id -> (sig, items, unfolded entries)
+        # Older pages of threads too big for a whole transcript, fetched as the device
+        # pages back: long id -> {"rows": [...] oldest first, "cursor": str, "more": bool}
+        self.history: dict[str, dict] = {}
         self.pending: dict[str, tuple[tuple, list[dict]]] = {}
         self.suggestions: dict[str, dict] = {}  # long id -> {cursor, status, items}
         self.partial_answers: dict[str, dict] = {}  # request id -> {question id: answer}
@@ -344,12 +357,62 @@ class Bridge:
             # T3 refuses whole transcripts past a size limit; show the recent part instead.
             if e.status != 400 or "too_large" not in str(e):
                 raise
-            rows = self.client.thread_bounded(t["id"])["projection"]["visibleTurnItems"]
+            rows = self._with_history(t["id"], self.client.thread_bounded(t["id"]))
+        else:
+            self.history.pop(t["id"], None)
+        return self._store(t["id"], sig, rows)
+
+    def _store(self, tid: str, sig: tuple, rows: list[dict]) -> tuple[list[dict], list[dict]]:
         # Keep each row's visibility: an inherited request can only be answered where it was asked.
         items = [dict(e["item"], _visibility=e.get("visibility")) for e in rows]
         entries = render.render_items(items)
-        self.entries[t["id"]] = (sig, items, entries)
+        self.entries[tid] = (sig, items, entries)
         return items, entries
+
+    def _with_history(self, tid: str, bounded: dict) -> list[dict]:
+        """The bounded snapshot's recent rows, after the older pages already fetched."""
+        recent = bounded["projection"]["visibleTurnItems"]
+        h = self.history.get(tid)
+        if h and h["rows"]:
+            # The recent part may have moved on since; fetch what fell between.
+            known = {r["item"]["id"] for r in h["rows"]}
+            gap, cursor = [], bounded.get("historyCursor")
+            for _ in range(5):
+                if any(r["item"]["id"] in known for r in recent + gap) or not cursor:
+                    break
+                page = self.client.thread_history(tid, cursor)
+                gap, cursor = page["items"] + gap, page.get("nextCursor")
+            else:
+                h = None  # too far behind: start over from the recent part
+            if h:
+                h["tail"] = gap + recent
+                return _dedupe(h["rows"] + h["tail"])
+        self.history[tid] = {"rows": [], "tail": recent, "cursor": bounded.get("historyCursor"),
+                             "more": bool(bounded.get("hasMoreHistory") and bounded.get("historyCursor"))}
+        return recent
+
+    def _more_history(self, tid: str) -> bool:
+        h = self.history.get(tid)
+        return bool(h and h["more"])
+
+    def _load_older(self, t: dict) -> bool:
+        """Fetch the next older page of a big thread's history. False if there's none."""
+        h = self.history.get(t["id"])
+        if not h or not h["more"]:
+            return False
+        try:
+            page = self.client.thread_history(t["id"], h["cursor"])
+        except T3Error as e:
+            log.warning("history page failed: %s", e)
+            h["more"] = False
+            return False
+        h["rows"] = page["items"] + h["rows"]
+        h["cursor"] = page.get("nextCursor")
+        h["more"] = bool(page.get("hasMoreHistory") and h["cursor"])
+        cached = self.entries.get(t["id"])
+        if cached:  # the same snapshot, with the older page in front
+            self._store(t["id"], cached[0], _dedupe(h["rows"] + h["tail"]))
+        return True
 
     def _entries(self, t: dict) -> list[dict]:
         """Every step, unfolded: for suggestions and previews."""
@@ -454,27 +517,33 @@ class Bridge:
         `expand`: short ids of finished runs to show unfolded."""
         self.last_device_at = time.monotonic()
         t = self._thread(short)
-        items, unfolded = self._load(t)
         state = render.thread_state(t)
-        cursor = unfolded[-1]["o"] if unfolded else 0
-        live_run = None
-        if state in ("working", "needs_you"):
-            live_run = t.get("activeRunId") or next(
-                (it.get("runId") for it in reversed(items) if it.get("runId")), None)
-        entries = render.render_items(
-            render.fold_runs(items, live_run, frozenset(expand)), child_info=self._child_info,
-            expanded=frozenset(expand),
-            image_ref=lambda kind, src, alt: self.images.ref(t["id"], kind, src, alt))
+        while True:
+            items, unfolded = self._load(t)
+            cursor = unfolded[-1]["o"] if unfolded else 0
+            live_run = None
+            if state in ("working", "needs_you"):
+                live_run = t.get("activeRunId") or next(
+                    (it.get("runId") for it in reversed(items) if it.get("runId")), None)
+            entries = render.render_items(
+                render.fold_runs(items, live_run, frozenset(expand)), child_info=self._child_info,
+                expanded=frozenset(expand),
+                image_ref=lambda kind, src, alt: self.images.ref(t["id"], kind, src, alt))
 
-        if after is not None:
-            shown = [e for e in entries if e["o"] > after]
-            more_before = False
-        else:
-            pool = [e for e in entries if before is None or e["o"] < before]
-            you = [i for i, e in enumerate(pool) if e["role"] == "you"]
-            start = you[-turns] if len(you) >= turns else 0
-            shown = pool[start:]
-            more_before = start > 0
+            if after is not None:
+                shown = [e for e in entries if e["o"] > after]
+                more_before = False
+                # A big thread's history comes in pages: fetch back to the cursor.
+                short_of_it = not any(e["o"] <= after for e in entries)
+            else:
+                pool = [e for e in entries if before is None or e["o"] < before]
+                you = [i for i, e in enumerate(pool) if e["role"] == "you"]
+                start = you[-turns] if len(you) >= turns else 0
+                shown = pool[start:]
+                more_before = start > 0 or self._more_history(t["id"])
+                short_of_it = start == 0
+            if not (short_of_it and self._load_older(t)):
+                break
 
         if state in ("done", "failed") and self._wants_suggestions(t["id"]):
             self._await_suggestions(t, cursor)

@@ -397,6 +397,45 @@ class BridgeTests(unittest.TestCase):
         v = self.b.thread_view(self.s1)
         self.assertEqual([e["text"] for e in v["entries"]], ["Second", "Answer two"])
 
+    def test_huge_thread_pages_back_through_history(self):
+        from t3bridge.t3client import T3Error
+
+        def too_large(tid):
+            raise T3Error('HTTP 400: {"reason":"thread_transcript_too_large"}', status=400)
+
+        def turn(n):  # your message n and the reply, ordinals n*10+1 and n*10+2
+            return [{"item": item(n * 10 + 1, "user_message", id=f"u{n}", text=f"Q{n}", createdBy="user")},
+                    {"item": item(n * 10 + 2, "assistant_message", id=f"a{n}", text=f"A{n}",
+                                  streaming=False)}]
+
+        pages = {"c3": ([r for n in (4, 5, 6) for r in turn(n)], "c2", True),
+                 "c2": ([r for n in (1, 2, 3) for r in turn(n)], None, False)}
+        fetched = []
+
+        def history(tid, cursor):
+            fetched.append(cursor)
+            rows, nxt, more = pages[cursor]
+            return {"items": rows, "nextCursor": nxt, "hasMoreHistory": more}
+
+        self.t3.thread_transcript = too_large
+        self.t3.thread_history = history
+        self.t3.thread_bounded = lambda tid: {"historyCursor": "c3", "hasMoreHistory": True,
+            "projection": {"visibleTurnItems": [r for n in (7, 8) for r in turn(n)]}}
+        self.t3.threads["t1"] = dict(self.t3.threads["t1"], itemCount=99)
+        self.b.refresh()
+        texts = lambda v: [e["text"] for e in v["entries"] if e["role"] == "you"]
+        v = self.b.thread_view(self.s1)  # 3 turns: one older page is fetched for the third
+        self.assertEqual((texts(v), v["more_before"]), (["Q6", "Q7", "Q8"], True))
+        first = v["entries"][0]["o"]
+        v = self.b.thread_view(self.s1, before=first)
+        self.assertEqual((texts(v), v["more_before"]), (["Q3", "Q4", "Q5"], True))
+        v = self.b.thread_view(self.s1, before=v["entries"][0]["o"])
+        self.assertEqual((texts(v), v["more_before"]), (["Q1", "Q2"], False))
+        self.assertEqual(fetched, ["c3", "c2"])  # each page once
+        v = self.b.thread_view(self.s1, after=first - 1)  # pinned at Q6: already loaded
+        self.assertEqual(texts(v), ["Q6", "Q7", "Q8"])
+        self.assertEqual(fetched, ["c3", "c2"])
+
     def _ask_secret(self):
         self.t3.items["t1"] = list(CONVERSATION) + [item(3000001, "secret_request", id="sec-1", status="waiting",
             secretStatus="pending", label="API key", reason="Needed for the deploy, see https://example.com/keys.",

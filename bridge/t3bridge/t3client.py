@@ -118,6 +118,12 @@ class T3Client:
         plus a cursor for older history."""
         return self._http("GET", f"/api/orchestration/threads/{_q(thread_id)}/bounded")
 
+    def thread_history(self, thread_id: str, cursor: str) -> dict:
+        """The page of turn items before `cursor` (from /bounded or the previous page):
+        `items` (oldest first), `nextCursor`, `hasMoreHistory`."""
+        return self._http("GET", f"/api/orchestration/threads/{_q(thread_id)}/history?"
+                          + urllib.parse.urlencode({"cursor": cursor}))
+
     def thread_transcript(self, thread_id: str) -> dict:
         """Ordered turn items (messages, tool calls, ...) with `position`."""
         return self._http("GET", f"/api/orchestration/threads/{_q(thread_id)}/transcript")
