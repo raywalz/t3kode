@@ -111,6 +111,11 @@ return {
 }
 ```
 
+The address can also be `https://`, for a bridge behind a reverse proxy or tunnel
+(Caddy, Cloudflare Tunnel, Tailscale Funnel, …). The plugin checks the certificate
+against Mozilla's root list, which it ships with (KOReader doesn't check by itself), so
+it needs a certificate from a public CA and a device clock that's about right.
+
 Then open **T3 Code**, the first item in the Tools tab. You can also bind it to a
 gesture: the action is "T3 Code threads".
 

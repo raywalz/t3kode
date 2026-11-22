@@ -54,6 +54,72 @@ function Api.newMessageId()
     return string.format("%x-%x-%x", os.time(), math.random(0, 0x3fffffff), counter)
 end
 
+-- HTTPS. KOReader's LuaSec defaults to verify = "none", and neither KOReader nor a Kobo
+-- ships CA certificates, so a plain https:// request would encrypt but trust anyone.
+-- Check the chain against Mozilla's roots (cacert.pem, from https://curl.se/docs/caextract.html)
+-- and the name against the certificate, which LuaSec leaves to the caller.
+Api.cafile = (debug.getinfo(1, "S").source:match("^@(.*)/[^/]*$") or ".") .. "/cacert.pem"
+
+-- RFC 6125: a wildcard stands for exactly one leftmost label.
+local function nameMatches(pattern, host)
+    pattern, host = pattern:lower(), host:lower()
+    if pattern == host then return true end
+    local suffix = pattern:match("^%*(%..+%..+)$")
+    return suffix ~= nil and host:sub(-#suffix) == suffix
+        and not host:sub(1, -#suffix - 1):find("[%.]") and #host > #suffix
+end
+
+local function certCoversHost(cert, host)
+    local ok, exts = pcall(cert.extensions, cert)
+    local san = ok and exts and exts["2.5.29.17"]
+    if not san then return false end -- names live in subjectAltName; CN fallback is obsolete
+    for _, name in ipairs(san.dNSName or {}) do
+        if nameMatches(name, host) then return true end
+    end
+    for _, ip in ipairs(san.iPAddress or {}) do
+        if ip == host then return true end
+    end
+    return false
+end
+
+local function verifiedHttpsCreate()
+    local https = require("ssl.https")
+    local make = https.tcp({ verify = { "peer", "fail_if_no_peer_cert" }, cafile = Api.cafile })
+    return function()
+        local conn = make()
+        local connect = conn.connect
+        function conn:connect(host, port)
+            connect(self, host, port) -- raises if the chain doesn't verify
+            local cert = self.sock:getpeercertificate()
+            if not (cert and certCoversHost(cert, host)) then
+                self.sock:close()
+                return nil, "certificate is not for " .. host
+            end
+            return 1
+        end
+        return conn
+    end
+end
+
+local function newRequest(url, method, sink)
+    local request = { url = url, method = method, sink = sink, headers = {} }
+    if url:match("^[Hh][Tt][Tt][Pp][Ss]://") then
+        request.create = verifiedHttpsCreate()
+    end
+    return request
+end
+
+-- Turn LuaSec's terse failures into something a reader can act on.
+local function networkError(err)
+    err = tostring(err)
+    if err:find("certificate verify failed", 1, true) then
+        return "The bridge's HTTPS certificate isn't trusted (" .. err .. "). Is the device's clock right?"
+    elseif err:find("certificate is not for", 1, true) then
+        return "The bridge's HTTPS " .. err .. "."
+    end
+    return "Can't reach the bridge (" .. err .. ")."
+end
+
 --- Returns ok, body_or_error_message, http_status.
 --- `timeouts`: { connect, total } seconds, instead of the usual 10 and 30.
 function Api:request(method, path, params, body, timeouts)
@@ -62,14 +128,8 @@ function Api:request(method, path, params, body, timeouts)
     end
     local sink = {}
     local data = body and JSON.encode(body) or nil
-    local request = {
-        url = self.base_url .. path .. query(params),
-        method = method,
-        sink = ltn12.sink.table(sink),
-        headers = {
-            ["Accept"] = "application/json",
-        },
-    }
+    local request = newRequest(self.base_url .. path .. query(params), method, ltn12.sink.table(sink))
+    request.headers["Accept"] = "application/json"
     if self.token ~= "" then
         request.headers["Authorization"] = "Bearer " .. self.token
     end
@@ -85,7 +145,7 @@ function Api:request(method, path, params, body, timeouts)
     socketutil:reset_timeout()
     if type(code) ~= "number" then
         logger.warn("t3: request failed", method, path, code, status)
-        return false, "Can't reach the bridge (" .. tostring(code or status) .. ")."
+        return false, networkError(code or status)
     end
     local text = table.concat(sink)
     local ok, decoded = pcall(JSON.decode, text)
@@ -117,12 +177,8 @@ function Api:download(path, params, filepath)
     local tmp = filepath .. ".part"
     local fh = io.open(tmp, "wb")
     if not fh then return false, "can't write " .. tmp end
-    local request = {
-        url = self.base_url .. path .. query(params),
-        method = "GET",
-        sink = ltn12.sink.file(fh), -- closes the file when done
-        headers = {},
-    }
+    local request = newRequest(self.base_url .. path .. query(params), "GET",
+        ltn12.sink.file(fh)) -- closes the file when done
     if self.token ~= "" then request.headers["Authorization"] = "Bearer " .. self.token end
     socketutil:set_timeout(15, 60)
     local code, headers = socket.skip(1, http.request(request))
@@ -136,7 +192,7 @@ function Api:download(path, params, filepath)
             efh:close()
             if ok and type(decoded) == "table" and type(decoded.error) == "string" then msg = decoded.error end
         end
-        if type(code) ~= "number" then msg = "Can't reach the bridge (" .. tostring(code) .. ")." end
+        if type(code) ~= "number" then msg = networkError(code) end
         os.remove(tmp)
         return false, msg
     end
