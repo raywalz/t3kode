@@ -396,6 +396,19 @@ function T3:listItems(body, project_filter)
     if #items == 0 then
         table.insert(items, { text = _("No threads yet.") })
     end
+    -- Starting a thread is the main thing to do here, so it's the first row rather than
+    -- only in the menu. In a project's list it starts in that project.
+    table.insert(items, 1, {
+        text = "+  " .. _("New thread"),
+        bold = true,
+        callback = function()
+            if project_filter then
+                self:newThread({ id = project_filter, title = self.list and self.list.title })
+            else
+                self:chooseProject()
+            end
+        end,
+    })
     -- A problem with the bridge itself (e.g. its T3 token is about to expire) goes on top.
     if str(body.notice) then
         table.insert(items, 1, { text = "! " .. str(body.notice), bold = true })
