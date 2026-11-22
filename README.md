@@ -66,11 +66,15 @@ e-reader (KOReader + t3.koplugin)  ──HTTP/JSON──▶  bridge  ──T3's 
 
 ## Setup
 
+Three parts: run the bridge next to T3, let the e-reader reach it, and install the
+plugin. You don't need SSH access to the e-reader; a USB cable is enough.
+
 ### 1. Run the bridge
 
 Needs Python 3.12 and a T3 Code server on the same machine. There are no dependencies.
 
 ```sh
+git clone https://github.com/raywalz/t3-koreader && cd t3-koreader
 cp .env.example .env    # then fill it in; every setting is explained there
 cd bridge && python3 -m t3bridge
 ```
@@ -82,9 +86,9 @@ cd bridge && python3 -m t3bridge
   (`filesystem:read` lets the bridge show images that agent replies point to; leave it
   out and those show as placeholders.)
   Set `T3_TOKEN_COMMAND` to that same command and the bridge renews the token by itself.
-- `BRIDGE_HOST` / `BRIDGE_TOKEN`: an address the e-reader can reach (a LAN or VPN
-  address such as Tailscale's), and a secret for the device. The bridge refuses to listen
-  beyond loopback without a token.
+- `BRIDGE_TOKEN`: a secret the e-reader sends. Make one with
+  `python3 -c 'import secrets; print(secrets.token_urlsafe(24))'`.
+- `BRIDGE_HOST`: where the bridge listens. See step 2.
 - Optionally `SUGGEST_URL`, `SUGGEST_API_KEY`, `SUGGEST_MODEL` for suggested replies.
 
 Check it from the same machine:
@@ -96,25 +100,60 @@ curl -H "authorization: Bearer $BRIDGE_TOKEN" http://<bridge host>:8787/v1/threa
 To keep it running, install it as a systemd user service. The steps are at the top of
 [contrib/t3-bridge.service](contrib/t3-bridge.service).
 
-### 2. Install the plugin
+### 2. Let the e-reader reach the bridge
 
-Copy `plugin/t3.koplugin` into KOReader's `plugins/` folder (over USB or SSH) and
-restart KOReader. Open **Tools → T3 Code**, then tap the menu button at the top left →
-**Settings** (or **Settings** on the error if it can't connect yet), and set **Bridge
-address** (`http://<bridge host>:8787`) and **Bridge token**. Or write the settings file
-`koreader/settings/t3.lua` directly:
+Pick one.
 
-```lua
-return {
-    ["bridge_url"] = "http://<bridge host>:8787",
-    ["bridge_token"] = "<BRIDGE_TOKEN>",
-}
-```
+**Same Wi-Fi.** The simplest, and enough if you only use it at home. Set `BRIDGE_HOST`
+to the computer's address on your network (`hostname -I` on Linux,
+`ipconfig getifaddr en0` on a Mac), for example `192.168.1.20`. The bridge address is
+then `http://192.168.1.20:8787`. Reserve that address for the computer in your
+router's DHCP settings so it doesn't change. This is plain HTTP, so anyone on the same
+network could read the token: fine at home, not on public Wi-Fi.
 
-The address can also be `https://`, for a bridge behind a reverse proxy or tunnel
-(Caddy, Cloudflare Tunnel, Tailscale Funnel, …). The plugin checks the certificate
-against Mozilla's root list, which it ships with (KOReader doesn't check by itself), so
-it needs a certificate from a public CA and a device clock that's about right.
+**A VPN such as Tailscale.** Works from anywhere. Set `BRIDGE_HOST` to the computer's
+VPN address (Tailscale's start with `100.`). The e-reader needs the VPN too, and there's
+no official Tailscale for e-readers, so getting it on takes some tinkering. Best if
+you already run it.
+
+**A public HTTPS address.** Works from anywhere, with nothing extra on the e-reader.
+Leave `BRIDGE_HOST=127.0.0.1` and put a tunnel or reverse proxy in front of
+`http://127.0.0.1:8787`: Cloudflare Tunnel, Tailscale Funnel (only the computer needs
+Tailscale), or Caddy on your own domain. The bridge address is then
+`https://your.domain`. The plugin checks the certificate against Mozilla's root list,
+which it ships with (KOReader doesn't check by itself), so it needs a certificate from a
+public CA and a device clock that's about right.
+
+> [!WARNING]
+> Whoever has `BRIDGE_TOKEN` can drive your coding agents, and they can run commands
+> on your computer. Behind a public address, that token is all that stands in the way,
+> and the bridge isn't hardened for the open internet (no rate limiting, for one).
+> **Set `BRIDGE_TOKEN` even though the bridge listens on loopback**: it only insists
+> on a token when it listens beyond loopback, and it can't tell that a tunnel is in front
+> of it. Prefer the first two options if they work for you.
+
+### 3. Install the plugin
+
+Over USB, with no typing on the e-reader:
+
+1. Connect the e-reader and find KOReader's folder on it: `.adds/koreader` on a Kobo
+   (`.adds` is hidden; on a Mac, Cmd+Shift+. in the file picker shows it), `koreader`
+   on a Kindle, `applications/koreader` on a PocketBook.
+2. Copy `plugin/t3.koplugin` into its `plugins` folder.
+3. Create `settings/t3.lua` in the same KOReader folder:
+
+   ```lua
+   return {
+       ["bridge_url"] = "http://<bridge host>:8787",
+       ["bridge_token"] = "<BRIDGE_TOKEN>",
+   }
+   ```
+
+4. Eject the e-reader and restart KOReader.
+
+Or copy only the plugin, and enter the settings on the e-reader: open **Tools → T3
+Code**, tap the menu button at the top left → **Settings** (or **Settings** on the
+error if it can't connect yet), and set **Bridge address** and **Bridge token**.
 
 Then open **T3 Code**, the first item in the Tools tab. You can also bind it to a
 gesture: the action is "T3 Code threads".
