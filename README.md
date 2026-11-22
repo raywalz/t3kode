@@ -40,6 +40,8 @@ Status: experimental, but in daily use on a Kobo Clara BW.
 - **Task list:** while the agent works through a to-do list (its to-do tool or plan
   updates), the thread ends with it, like the app's "Tasks 3/7": done steps ticked, the
   current one in bold. It updates as steps finish.
+- **Context usage:** the end of a thread shows how full the agent's context window is
+  ("22% of context used (220k of 1m)"), as T3's context meter does.
 - **Pull requests** linked to a thread show at its end with their status: open, draft
   or merged, checks, review, and conflicts.
 - **Model picker:** a thread's Model button switches the model its next turn uses, and

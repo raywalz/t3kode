@@ -71,6 +71,44 @@ def pull_requests(thread: dict) -> list[dict]:
     return out
 
 
+def format_tokens(n: float) -> str:
+    """Token counts the way the app's context meter shows them: 950, 9.5k, 220k, 1m."""
+    if n < 1_000:
+        return str(round(n))
+    if n < 10_000:
+        return f"{n / 1_000:.1f}".removesuffix(".0") + "k"
+    if n < 999_500:
+        return f"{round(n / 1_000)}k"
+    return f"{n / 1_000_000:.1f}".removesuffix(".0") + "m"
+
+
+def context_usage(projection: dict) -> dict | None:
+    """How full the agent's context window is, picked like the app's context meter: the
+    newest token report from the thread's provider turns, else its provider thread's
+    last report. {used, max, percent, label}; max and percent are None when the provider
+    doesn't say how big the window is."""
+    latest = None
+    for turn in projection.get("providerTurns") or []:
+        usage = turn.get("tokenUsage")
+        if isinstance(usage, dict) and (latest is None or
+                                        str(usage.get("updatedAt")) >= str(latest.get("updatedAt"))):
+            latest = usage
+    if latest is None:
+        active = (projection.get("thread") or {}).get("activeProviderThreadId")
+        latest = next((p.get("contextUsage") for p in projection.get("providerThreads") or []
+                       if p.get("id") == active), None)
+    used = latest.get("usedTokens") if isinstance(latest, dict) else None
+    if not isinstance(used, (int, float)) or used < 0:
+        return None
+    max_ = latest.get("maxTokens")
+    if not isinstance(max_, (int, float)) or max_ <= 0:
+        return {"used": used, "max": None, "percent": None,
+                "label": f"{format_tokens(used)} tokens of context used"}
+    percent = min(100, round(used / max_ * 100))
+    return {"used": used, "max": max_, "percent": percent,
+            "label": f"{percent}% of context used ({format_tokens(used)} of {format_tokens(max_)})"}
+
+
 def todo_list(items: list[dict], live_run: str | None) -> dict | None:
     """The agent's task list (its to-do tool or plan updates), as the app's
     "Tasks 3/7" banner picks it: the running turn's list, else the latest one. A finished

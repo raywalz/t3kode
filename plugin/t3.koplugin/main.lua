@@ -990,6 +990,11 @@ local function composeHtml(view, have, anchor, page_break_you, seam)
         table.insert(parts, '<div class="prs"><div class="pending-title">' .. esc(heading)
             .. "</div>" .. table.concat(prs) .. "</div>")
     end
+    -- How full the agent's context window is, like the app's context meter.
+    local context = type(view.context) == "table" and str(view.context.label)
+    if context then
+        table.insert(parts, '<div class="status">' .. esc(context) .. "</div>")
+    end
     if str(view.mode) == "plan" then
         table.insert(parts, '<div class="status">' .. esc(_("Plan mode is on.")) .. "</div>")
     end

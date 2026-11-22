@@ -171,6 +171,10 @@ uses it. Returns the new thread view. Choosing the current model changes nothing
   app's "Tasks 3/7" banner, or null: `{done, total, live, steps: [{text, status}]}` with
   `status` `pending`, `running` or `completed`. It's the running turn's list (`live`), else
   the latest one while steps are left undone. Step changes count as a change mid-turn.
+- `context`: how full the agent's context window is, like the app's context meter, or
+  null when T3 has no report: `{used, max, percent, label}`, e.g. label `22% of context
+  used (220k of 1m)`; `max` and `percent` are null when the provider doesn't give the
+  window size. Mid-turn changes don't count as a change unless `progress` is on.
 - Your message's citations (text you quoted from a reply, with a comment) show as the
   quote in a block quote, then the comment.
 - A subagent thread's view has `parent: {id, title}`; top-level threads have `parent: null`.

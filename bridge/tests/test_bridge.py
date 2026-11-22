@@ -102,6 +102,9 @@ class FakeT3:
     def thread_snapshot(self, tid):
         return {"projection": self.projections[tid]}
 
+    def thread_bounded(self, tid):
+        return {"projection": self.projections.get(tid, {})}
+
     def _record(self, name, *args, **kw):
         self.calls.append((name, args, kw))
         return {"sequence": len(self.calls)}
@@ -285,6 +288,28 @@ class RenderTests(unittest.TestCase):
         e = render.render_items([item(1, "assistant_message", text=text, streaming=False)])
         self.assertEqual((e[0]["text"], e[0]["replies"]), ("Ready to ship.", ["Go", "Wait, run tests first"]))
         self.assertNotIn("replies", e[0]["html"])
+
+
+class ContextTests(unittest.TestCase):
+    def test_context_usage(self):
+        self.assertEqual([render.format_tokens(n) for n in (950, 9500, 9049, 219877, 999_499, 1_000_000)],
+                         ["950", "9.5k", "9k", "220k", "999k", "1m"])
+        proj = {"thread": {"activeProviderThreadId": "pt2"},
+                "providerThreads": [{"id": "pt1", "contextUsage": {"usedTokens": 5}},
+                                    {"id": "pt2", "contextUsage": {"usedTokens": 219877, "maxTokens": 1000000}}],
+                "providerTurns": []}
+        self.assertEqual(render.context_usage(proj), {
+            "used": 219877, "max": 1000000, "percent": 22, "label": "22% of context used (220k of 1m)"})
+        # The newest turn report wins over the provider thread's.
+        proj["providerTurns"] = [
+            {"tokenUsage": {"usedTokens": 300000, "maxTokens": 1000000, "updatedAt": "2026-01-02T00:00:00Z"}},
+            {"tokenUsage": {"usedTokens": 100000, "maxTokens": 1000000, "updatedAt": "2026-01-01T00:00:00Z"}},
+            {}]
+        self.assertEqual(render.context_usage(proj)["percent"], 30)
+        # No window size: tokens only. No reports: nothing.
+        proj["providerTurns"] = [{"tokenUsage": {"usedTokens": 1500, "updatedAt": "x"}}]
+        self.assertEqual(render.context_usage(proj)["label"], "1.5k tokens of context used")
+        self.assertIsNone(render.context_usage({}))
 
 
 class CitationTests(unittest.TestCase):
@@ -698,6 +723,18 @@ class BridgeTests(unittest.TestCase):
         self.t3.threads["t1"] = dict(self.t3.threads["t1"], itemCount=9, interactionMode="plan",
                                      hasActionableProposedPlan=True)
         self.b.refresh()
+
+    def test_view_context_usage(self):
+        self.t3.projections["t1"] = {"thread": {"activeProviderThreadId": "pt"}, "providerThreads": [
+            {"id": "pt", "contextUsage": {"usedTokens": 50000, "maxTokens": 200000}}]}
+        self.b.refresh()
+        v = self.b.thread_view(self.s1)
+        self.assertEqual(v["context"]["label"], "25% of context used (50k of 200k)")
+        self.t3.projections["t1"]["providerThreads"][0]["contextUsage"]["usedTokens"] = 100000
+        self.t3.threads["t1"] = dict(self.t3.threads["t1"], updatedAt="2026-01-09T00:00:00Z")
+        self.b.refresh()
+        self.assertNotEqual(self.b.thread_view(self.s1)["v"], v["v"])
+        self.assertIsNone(self.b.thread_view(render.short_id("t2"))["context"])
 
     def test_task_list(self):
         steps = lambda *st: [{"id": f"todo-{i}", "text": f"Step {i}", "status": x} for i, x in enumerate(st)]

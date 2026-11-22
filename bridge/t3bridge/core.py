@@ -100,6 +100,7 @@ def _content_version(body: dict, progress: bool) -> str:
     shown["prs"] = [(p["number"], p["status"], p["title"]) for p in body["prs"]]
     shown["tasks"] = body["tasks"]
     if progress or body["state"] != "working":
+        shown["context"] = (body["context"] or {}).get("label")
         shown["entries"] = [(e["role"], e["text"], e.get("expanded")) for e in body["entries"]]
     raw = json.dumps(shown, sort_keys=True, ensure_ascii=False).encode()
     return hashlib.sha1(raw).hexdigest()[:12]
@@ -199,6 +200,7 @@ class Bridge:
         self.wake_keys: dict[str, tuple] = {}
         self.by_short: dict[str, str] = {}  # short id -> long id (threads and projects)
         self.entries: dict[str, tuple] = {}  # long id -> (sig, items, unfolded entries)
+        self.contexts: dict[str, tuple] = {}  # long id -> (sig, context usage)
         # Older pages of threads too big for a whole transcript, fetched as the device
         # pages back: long id -> {"rows": [...] oldest first, "cursor": str, "more": bool}
         self.history: dict[str, dict] = {}
@@ -415,6 +417,21 @@ class Bridge:
             self._store(t["id"], cached[0], _dedupe(h["rows"] + h["tail"]))
         return True
 
+    def _context(self, t: dict) -> dict | None:
+        """The thread's context window usage (render.context_usage), cached until the
+        thread changes. From T3's bounded snapshot, which is quick; None if it fails."""
+        sig = _signature(t)
+        cached = self.contexts.get(t["id"])
+        if cached and cached[0] == sig:
+            return cached[1]
+        try:
+            usage = render.context_usage(self.client.thread_bounded(t["id"])["projection"])
+        except Exception as e:
+            log.warning("context usage: %s", e)
+            usage = None
+        self.contexts[t["id"]] = (sig, usage)
+        return usage
+
     def _entries(self, t: dict) -> list[dict]:
         """Every step, unfolded: for suggestions and previews."""
         return self._load(t)[1]
@@ -566,6 +583,7 @@ class Bridge:
             "plan_mode": self._plan_mode_ok(t.get("modelSelection")),
             "prs": render.pull_requests(t),
             "tasks": render.todo_list(items, live_run),
+            "context": self._context(t),
             # For the thread menu (hold the title): the same fields as a list row.
             "settled": _is_settled(t), "pinned": bool(t.get("pinnedAt")),
             "snoozed_until": t["snoozedUntil"] if _snoozed(t) else None,
