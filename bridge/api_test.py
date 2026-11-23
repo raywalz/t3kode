@@ -115,7 +115,7 @@ def main() -> int:
     ap.add_argument("--project", default=os.environ.get("T3_TEST_PROJECT"),
                     help="project id or title for the throwaway thread")
     ap.add_argument("--model", default=os.environ.get("T3_TEST_MODEL"),
-                    help="instanceId/model")
+                    help="instanceId/model (default: T3's default model for the project)")
     ap.add_argument("--keep", action="store_true", help="don't delete the test thread")
     ap.add_argument("--requests", action="store_true",
                     help="also exercise a tool approval (declined) and a multiple-choice question")
@@ -144,7 +144,17 @@ def main() -> int:
     if project is None:
         print(f"no project {args.project!r}")
         return 1
-    instance, model = args.model.split("/", 1)
+    if args.model:
+        instance, model = args.model.split("/", 1)
+        selection = {"instanceId": instance, "model": model}
+    else:
+        settings = client.server_config().get("settings") or {}
+        override = (settings.get("projectSettingsOverrides") or {}).get(project["id"]) or {}
+        selection = (override.get("defaultModelSelection") or project.get("defaultModelSelection")
+                     or settings.get("defaultModelSelection") or settings.get("fallbackModelSelection"))
+        if not selection:
+            print("T3 has no default model; pass --model instanceId/model")
+            return 1
 
     # 2. Create a throwaway thread with a first message.
     launched = client.launch_thread(
@@ -152,7 +162,7 @@ def main() -> int:
         "t3-koreader API test (safe to delete)",
         "This is an automated API test. Reply with exactly the word PONG and nothing else. "
         "Do not use any tools.",
-        {"instanceId": instance, "model": model},
+        selection,
     )
     tid = launched["threadId"]
     print(f"\n[create] thread {tid} in project {project['title']!r}")
