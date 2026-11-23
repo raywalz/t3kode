@@ -12,7 +12,7 @@ keyboard is there for everything else.
 
 <p>
 <img src="docs/screenshots/thread-list.png" width="32%" alt="Thread list grouped by project, with needs-you, working and done states">
-<img src="docs/screenshots/thread-view.png" width="32%" alt="A finished thread: the work folded into one row, the reply with a table and code, and suggested replies as buttons">
+<img src="docs/screenshots/thread-view.png" width="32%" alt="A finished thread: the work folded into one row, and the reply with a table and code">
 <img src="docs/screenshots/approval.png" width="32%" alt="A thread waiting for approval, with Allow, Allow for session and Decline buttons">
 </p>
 
