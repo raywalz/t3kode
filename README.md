@@ -20,6 +20,10 @@ keyboard is there for everything else.
 <img src="docs/screenshots/reply.png" width="48%" alt="The Reply menu: Continue, Summarize, three suggested replies, and Type…">
 <img src="docs/screenshots/approval.png" width="48%" alt="A thread waiting for approval, with Allow, Allow for session and Decline buttons">
 </p>
+<p>
+<img src="docs/screenshots/preview-ios.png" width="48%" alt="Preview showing a thread's iOS Simulator: an app's settings screen in grayscale, with Refresh, Rotate and Close">
+<img src="docs/screenshots/preview-android.png" width="48%" alt="Preview showing a thread's Android Emulator: the same settings screen in Android's style">
+</p>
 
 Status: experimental, but in daily use on a Kobo Clara BW. Tested with T3 Code 0.1.11. The
 bridge uses T3's internal API, which can change in any T3 release, so a T3 update may

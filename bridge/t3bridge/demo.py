@@ -7,6 +7,9 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+SCREENS = Path(__file__).parent / "demo_screens"
 
 NOW = datetime.now(timezone.utc)
 
@@ -146,6 +149,22 @@ class DemoT3:
                 "providers": [{"instanceId": "demo", "displayName": "Demo", "status": "ready",
                                "models": [{"slug": "demo", "name": "Demo model"},
                                           {"slug": "demo-fast", "name": "Demo fast"}]}]}
+
+    def preview_tabs(self, tid):
+        return []
+
+    def devices(self):
+        """A simulator and an emulator, both open in the dark mode thread."""
+        devs = [{"hostId": "local", "id": "demo-ios", "platform": "ios", "name": "iPhone 17 Pro",
+                 "version": "iOS 26.5", "booted": True, "physical": False},
+                {"hostId": "local", "id": "demo-android", "platform": "android", "name": "Pixel 9",
+                 "version": "Android 15.0", "booted": True, "physical": False}]
+        return {"devices": devs, "sessions": [
+            {"threadId": "dark", "hostId": d["hostId"], "deviceId": d["id"], "platform": d["platform"],
+             "openedAt": _ts(2)} for d in devs]}
+
+    def device_screenshot(self, host_id, device_id, platform):
+        return (SCREENS / f"{platform}.png").read_bytes()
 
     def set_model(self, tid, sel, **_kw):
         with self.lock:
