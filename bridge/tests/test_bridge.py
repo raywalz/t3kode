@@ -195,6 +195,20 @@ class MarkdownTests(unittest.TestCase):
         from t3bridge.markdown import to_html
         self.assertEqual(to_html("![tile lattice](/tmp/x.png)"), "<p><i>[image: tile lattice]</i></p>")
 
+    def test_html_img_tags_are_images(self):
+        from t3bridge.markdown import to_html
+        seen = []
+        def image(src, alt):
+            seen.append((src, alt))
+            return f"<img src='{len(seen)}'/>"
+        md = ('Shots:\n\n<p align="center">\n<img src="/tmp/a.png" width="45%" alt="A &amp; B">\n'
+              "<a href='x'><img src='/tmp/b.png'></a>\n</p>\n\nAfter `<img src=\"/tmp/c.png\">` and <b>raw</b>.")
+        self.assertEqual(to_html(md, image),
+                         "<p>Shots:</p><p><img src='1'/><br/><img src='2'/></p>"
+                         "<p>After <code>&lt;img src=\"/tmp/c.png\"&gt;</code> and &lt;b&gt;raw&lt;/b&gt;.</p>")
+        self.assertEqual(seen, [("/tmp/a.png", "A & B"), ("/tmp/b.png", "")])
+        self.assertEqual(to_html('<img alt="logo">'), "<p><i>[image: logo]</i></p>")  # no src
+
     def test_entries_carry_html(self):
         e = render.render_items([item(1, "assistant_message", text="**Hi** <there>", streaming=False)])
         self.assertEqual(e[0]["html"], "<p><b>Hi</b> &lt;there&gt;</p>")

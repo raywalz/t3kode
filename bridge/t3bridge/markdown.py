@@ -1,9 +1,10 @@
 """Small markdown → HTML converter for agent messages (stdlib only).
 
 Covers what coding agents write: paragraphs, headings, bold/italic, inline code,
-fenced code blocks, nested lists, block quotes, tables, rules, and links.
+fenced code blocks, nested lists, block quotes, tables, rules, links, and images
+(markdown's, or HTML <img> tags as in READMEs). Other HTML shows as text.
 The output targets KOReader's HTML widget (MuPDF), so it stays plain:
-no classes beyond a few, no scripts, no images.
+no classes beyond a few, no scripts.
 """
 
 from __future__ import annotations
@@ -20,6 +21,15 @@ _TABLE_SEP = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
 
 
 _IMAGE = re.compile(r"!\[([^\]]*)\]\(<?((?:[^()\s<>]|\([^()]*\))+)>?(?:\s+\"[^\"]*\")?\)")
+_HTML_IMG = re.compile(r"<img\b[^>]*>", re.I)
+_HTML_ATTR = re.compile(r"""([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""")
+# A line holding only wrapper tags, as agents put around <img> (GitHub style): a paragraph break.
+_HTML_WRAPPER_LINE = re.compile(r"^\s*(?:</?(?:p|div|center|figure|picture|span|a)\b[^>]*>\s*)+$", re.I)
+
+
+def _img_attrs(tag: str) -> dict[str, str]:
+    return {m.group(1).lower(): html.unescape(next(v for v in m.groups()[1:] if v is not None))
+            for m in _HTML_ATTR.finditer(tag)}
 
 
 def image_placeholder(alt: str) -> str:
@@ -32,12 +42,17 @@ def inline(text: str, image=None) -> str:
     `image(src, alt)` returns the HTML for a markdown image, or None for a placeholder."""
     codes: list[str] = []
 
-    def stash_image(m: re.Match) -> str:
-        alt, src = m.group(1), m.group(2)
-        rendered = image(src, alt) if image else None
+    def stash_rendered(src: str, alt: str) -> str:
+        rendered = image(src, alt) if image and src else None
         codes.append(rendered or image_placeholder(alt))
         return f"\x00{len(codes) - 1}\x00"
 
+    def stash_image(m: re.Match) -> str:
+        return stash_rendered(m.group(2), m.group(1))
+
+    def stash_html_image(m: re.Match) -> str:
+        attrs = _img_attrs(m.group(0))
+        return stash_rendered(attrs.get("src", ""), attrs.get("alt", ""))
 
     def stash(m: re.Match) -> str:
         codes.append(f"<code>{html.escape(m.group(1), quote=False)}</code>")
@@ -45,6 +60,8 @@ def inline(text: str, image=None) -> str:
 
     text = re.sub(r"`([^`\n]+)`", stash, text)
     text = _IMAGE.sub(stash_image, text)  # after code spans: an image in backticks is code
+    text = re.sub(r"<a\b[^>]*>\s*(<img\b[^>]*>)\s*</a>", r"\1", text, flags=re.I)  # linked image
+    text = _HTML_IMG.sub(stash_html_image, text)
     text = html.escape(text, quote=False)
     # [label](url): keep the label, drop the URL (links can't be followed on the device).
     text = re.sub(r"\[([^\]]+)\]\((?:[^()\s]|\([^()]*\))+\)", r"<u>\1</u>", text)
@@ -100,7 +117,7 @@ def to_html(md: str, image=None) -> str:
 
     while i < len(lines):
         line = lines[i]
-        if not line.strip():
+        if not line.strip() or _HTML_WRAPPER_LINE.match(line):
             flush_para()
             i += 1
             continue
