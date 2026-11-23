@@ -21,8 +21,9 @@ keyboard is there for everything else.
 <img src="docs/screenshots/approval.png" width="48%" alt="A thread waiting for approval, with Allow, Allow for session and Decline buttons">
 </p>
 <p>
-<img src="docs/screenshots/preview-ios.png" width="48%" alt="Preview showing a thread's iOS Simulator: an app's settings screen in grayscale, with Refresh, Rotate and Close">
-<img src="docs/screenshots/preview-android.png" width="48%" alt="Preview showing a thread's Android Emulator: the same settings screen in Android's style">
+<img src="docs/screenshots/preview-web.png" width="32%" alt="Preview showing a thread's browser tab: a draft blog post in grayscale, with Refresh, Rotate and Close">
+<img src="docs/screenshots/preview-ios.png" width="32%" alt="Preview showing a thread's iOS Simulator: an app's settings screen in grayscale">
+<img src="docs/screenshots/preview-android.png" width="32%" alt="Preview showing a thread's Android Emulator: the same settings screen in Android's style">
 </p>
 
 Status: experimental, but in daily use on a Kobo Clara BW. Tested with T3 Code 0.1.11. The

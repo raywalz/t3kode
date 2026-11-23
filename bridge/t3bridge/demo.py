@@ -151,7 +151,15 @@ class DemoT3:
                                           {"slug": "demo-fast", "name": "Demo fast"}]}]}
 
     def preview_tabs(self, tid):
-        return []
+        """A browser tab with the draft, open in the blog post thread."""
+        if tid != "blog":
+            return []
+        return [{"tabId": "demo-tab", "runtime": "server",
+                 "navStatus": {"_tag": "Success", "url": "http://localhost:4321/blog/launch",
+                               "title": "my-app 2.4: dark mode, and a faster login"}}]
+
+    def preview_frame(self, tid, tab_id, max_width, max_height, quality=85):
+        return (SCREENS / "web.jpg").read_bytes()
 
     def devices(self):
         """A simulator and an emulator, both open in the dark mode thread."""
