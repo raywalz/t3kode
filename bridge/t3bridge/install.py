@@ -116,5 +116,5 @@ def main(argv: list[str]) -> int:
     print(f"Copied the plugin to {dest}")
     print(f"Wrote {settings}: bridge address {url}, " + ("with your BRIDGE_TOKEN" if token else "no token"))
     print("Eject the e-reader and restart KOReader (or, if T3 KOde was already installed, "
-          "choose Reload T3 plugin).")
+          "choose Reload T3 KOde).")
     return 0

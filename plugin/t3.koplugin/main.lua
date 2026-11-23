@@ -65,7 +65,7 @@ function T3:init()
         category = "none", event = "T3Open", title = _("T3 KOde threads"), general = true,
     })
     Dispatcher:registerAction("t3_reload", {
-        category = "none", event = "T3Reload", title = _("Reload T3 plugin"), general = true,
+        category = "none", event = "T3Reload", title = _("Reload T3 KOde"), general = true,
     })
     self.ui.menu:registerToMainMenu(self)
 end
@@ -531,7 +531,7 @@ function T3:viewActions(view)
     self:threadActions(view, function()
         if not self.view or self.view.id ~= view.id then return end -- closed meanwhile
         if self.viewer then self.viewer:onClose() end
-    end, { text = _("Reload T3 plugin"), callback = function() self:reloadPlugin() end })
+    end, { text = _("Reload T3 KOde"), callback = function() self:reloadPlugin() end })
 end
 
 --- The app's snooze choices. This evening only while it's more than an hour away.
@@ -700,7 +700,7 @@ function T3:showListActions()
                 UIManager:close(dialog)
                 self:showSettings()
             end }},
-            {{ text = _("Reload T3 plugin"), callback = function()
+            {{ text = _("Reload T3 KOde"), callback = function()
                 UIManager:close(dialog)
                 self:reloadPlugin()
             end }},
@@ -770,9 +770,9 @@ function T3:reloadPlugin()
         for _i, l in ipairs(lists) do self:showList(l.project_id, l.title) end
         if reopen_thread then self:openThread(reopen_thread, page) end
         if ok and type(new) == "table" then
-            notify(_("T3 plugin reloaded."), 2)
+            notify(_("T3 KOde reloaded."), 2)
         else
-            notify(T(_("Couldn't reload the T3 plugin; still running the old code.\n%1"), tostring(new)), 10)
+            notify(T(_("Couldn't reload T3 KOde; still running the old version.\n%1"), tostring(new)), 10)
         end
     end)
 end
@@ -840,7 +840,7 @@ function T3:updateRow(up)
             self:confirmUpdate(up)
         end }
     elseif isNewer(up.plugin, self:pluginVersion()) then
-        return { text = "↑  " .. T(_("Update the T3 plugin to %1"), up.plugin), bold = true, callback = function()
+        return { text = "↑  " .. T(_("Update T3 KOde on this e-reader to %1"), up.plugin), bold = true, callback = function()
             self:updatePlugin()
         end }
     end
@@ -852,7 +852,7 @@ function T3:confirmUpdate(up)
         return
     end
     UIManager:show(ConfirmBox:new{
-        text = T(_("Update T3 KOde to %1?\n\nThe bridge tests the new version, updates and restarts. Then this plugin updates too. It takes a minute or two."), up.release),
+        text = T(_("Update T3 KOde to %1?\n\nThe bridge tests the new version, updates and restarts. Then T3 KOde on this e-reader updates too. It takes a minute or two."), up.release),
         ok_text = _("Update"),
         ok_callback = function() self:updateBridge(up.release) end,
     })
@@ -897,7 +897,7 @@ end
 function T3:updatePlugin()
     local sha2 = require("ffi/sha2")
     local new_dir, old_dir = self.path .. ".new", self.path .. ".old"
-    local ok, err = withBusy(_("Updating the T3 plugin…"), function()
+    local ok, err = withBusy(_("Updating T3 KOde on this e-reader…"), function()
         local got, manifest = self.api:request("GET", "/v1/plugin")
         if not got then return false, manifest end
         if type(manifest.files) ~= "table" or #manifest.files == 0 then
@@ -933,7 +933,7 @@ function T3:updatePlugin()
     end)
     if not ok then
         removeTree(new_dir)
-        notify(T(_("Couldn't update the T3 plugin, so it's unchanged: %1"), tostring(err)), 15)
+        notify(T(_("Couldn't update T3 KOde on this e-reader, so it's unchanged: %1"), tostring(err)), 15)
         return
     end
     logger.info("t3: plugin updated to", self:pluginVersion())
