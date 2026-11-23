@@ -1291,7 +1291,7 @@ function T3:threadButtons(view)
             callback = function() self:changeModel(view) end,
         },
         {
-            text = _("Browser"),
+            text = _("Preview"),
             callback = function() self:showBrowser(view) end,
         },
         {
@@ -1303,53 +1303,78 @@ function T3:threadButtons(view)
 end
 
 -- ---------------------------------------------------------------------------
--- preview browser (view only)
+-- preview: browser tabs and simulators/emulators (view only)
 
---- The thread's preview browser: straight to the tab if there's one, else a list.
+--- What the Preview button can show, as { title, caption, viewable, fetch(width, file) }.
+local function previewItems(api, view, body)
+    local items = {}
+    for _i, tab in ipairs(type(body.tabs) == "table" and body.tabs or {}) do
+        local title = str(tab.title) or _("Blank tab")
+        table.insert(items, {
+            title = title,
+            label = tab.viewable == false and (title .. " " .. _("(desktop app)")) or title,
+            caption = str(tab.url),
+            viewable = tab.viewable ~= false,
+            fetch = function(width, file) return api:browserSnapshot(view.id, str(tab.id), width, file) end,
+        })
+    end
+    for _i, dev in ipairs(type(body.devices) == "table" and body.devices or {}) do
+        local name = str(dev.name) or str(dev.id) or _("Device")
+        local kind = str(dev.kind)
+        table.insert(items, {
+            title = name,
+            label = kind and (name .. " (" .. kind .. ")") or name,
+            caption = kind,
+            viewable = true,
+            fetch = function(width, file) return api:deviceSnapshot(view.id, str(dev.id), width, file) end,
+        })
+    end
+    return items
+end
+
+--- The thread's previews: straight to the one if there's one, else a list.
 function T3:showBrowser(view)
-    local ok, body = withBusy(_("Loading browser tabs…"), function() return self.api:browserTabs(view.id) end)
+    local ok, body = withBusy(_("Loading previews…"), function() return self.api:browserTabs(view.id) end)
     if not ok then
         notify(body)
         return
     end
-    local tabs = type(body.tabs) == "table" and body.tabs or {}
-    if #tabs == 0 then
-        notify(_("This thread has no browser tabs open."))
+    local items = previewItems(self.api, view, type(body) == "table" and body or {})
+    if #items == 0 then
+        notify(_("This thread has no browser tabs or devices open."))
         return
     end
-    if #tabs == 1 then return self:showBrowserTab(view, tabs[1]) end
+    if #items == 1 then return self:showPreview(view, items[1]) end
     local dialog
     local rows = {}
-    for _i, tab in ipairs(tabs) do
-        local label = str(tab.title) or _("Blank tab")
-        if tab.viewable == false then label = label .. " " .. _("(desktop app)") end
+    for _i, item in ipairs(items) do
         table.insert(rows, {{
-            text = label,
+            text = item.label,
             align = "left",
             callback = function()
                 UIManager:close(dialog)
-                self:showBrowserTab(view, tab)
+                self:showPreview(view, item)
             end,
         }})
     end
     table.insert(rows, {{ text = _("Cancel"), callback = function() UIManager:close(dialog) end }})
-    dialog = ButtonDialog:new{ title = _("Browser tabs"), buttons = rows }
+    dialog = ButtonDialog:new{ title = _("Preview"), buttons = rows }
     UIManager:show(dialog)
 end
 
---- A snapshot of one tab, full screen, with Refresh to take a new one.
-function T3:showBrowserTab(view, tab, old_viewer)
-    if tab.viewable == false then
+--- A snapshot of one tab or device, full screen, with Refresh to take a new one.
+function T3:showPreview(view, item, old_viewer)
+    if not item.viewable then
         notify(_("This tab is open in the desktop app's own window, which T3 can't share."))
         return
     end
     -- A new name each time: KOReader caches decoded images by file name.
     self.snapshot_n = (self.snapshot_n or 0) + 1
-    local file = imageDir() .. "/browser-" .. os.time() .. "-" .. self.snapshot_n .. ".png"
+    local file = imageDir() .. "/preview-" .. os.time() .. "-" .. self.snapshot_n .. ".png"
     local ok, err = withBusy(_("Taking a snapshot…"), function()
         -- Sized for the long side, so the page stays sharp when rotated.
         local width = math.max(Device.screen:getWidth(), Device.screen:getHeight())
-        return self.api:browserSnapshot(view.id, str(tab.id), width, file)
+        return item.fetch(width, file)
     end)
     if not ok then
         notify(err)
@@ -1361,8 +1386,8 @@ function T3:showBrowserTab(view, tab, old_viewer)
         image_disposable = true,
         fullscreen = true,
         with_title_bar = true,
-        title_text = str(tab.title) or _("Browser"),
-        caption = str(tab.url),
+        title_text = item.title,
+        caption = item.caption,
         caption_visible = false,
         buttons_visible = true,
         rotated = old_viewer and old_viewer.rotated or nil,
@@ -1374,7 +1399,7 @@ function T3:showBrowserTab(view, tab, old_viewer)
         zero_sep = true,
         show_parent = viewer,
         buttons = {{
-            { text = _("Refresh"), callback = function() self:showBrowserTab(view, tab, viewer) end },
+            { text = _("Refresh"), callback = function() self:showPreview(view, item, viewer) end },
             { id = "scale", text = _("Scale"), callback = function()
                 viewer.scale_factor = viewer._scale_to_fit and 1 or 0
                 viewer._scale_to_fit = not viewer._scale_to_fit

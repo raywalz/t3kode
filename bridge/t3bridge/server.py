@@ -65,6 +65,7 @@ def make_handler(bridge: Bridge, device_token: str, restart=None):
         ("POST", re.compile(r"^/v1/threads/(\w+)/action$"), "action"),
         ("GET", re.compile(r"^/v1/threads/(\w+)/browser$"), "browser"),
         ("GET", re.compile(r"^/v1/threads/(\w+)/browser/snapshot$"), "browser_snapshot"),
+        ("GET", re.compile(r"^/v1/threads/(\w+)/device/snapshot$"), "device_snapshot"),
         ("GET", re.compile(r"^/v1/update$"), "update_info"),
         ("POST", re.compile(r"^/v1/update$"), "update"),
         ("GET", re.compile(r"^/v1/plugin$"), "plugin"),
@@ -199,6 +200,13 @@ def make_handler(bridge: Bridge, device_token: str, restart=None):
                 raise BridgeError(400, "send `tab`")
             data, ctype = bridge.browser_snapshot(short, tab, _int(q, "w", 1000, 64, 4000))
             return data, ctype, "no-store"  # a page changes; every fetch is a new look
+
+        def r_device_snapshot(self, q, short):
+            device = q.get("device", [""])[0]
+            if not device:
+                raise BridgeError(400, "send `device`")
+            data, ctype = bridge.device_snapshot(short, device, _int(q, "w", 1000, 64, 4000))
+            return data, ctype, "no-store"
 
         def r_projects(self, q):
             return bridge.projects()

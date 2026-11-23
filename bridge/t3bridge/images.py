@@ -119,6 +119,10 @@ class Images:
         """A browser frame for e-ink: grayscale PNG, since a web page is mostly text."""
         return self._for_eink(jpeg, "image/jpeg", width, photo=False)
 
+    def device_snapshot(self, png: bytes, width: int) -> tuple[bytes, str]:
+        """A simulator or emulator screen for e-ink: grayscale PNG, like a browser frame."""
+        return self._for_eink(png, "image/png", width, photo=False)
+
     def _for_eink(self, data: bytes, ctype: str, width: int,
                   photo: bool | None = None) -> tuple[bytes, str]:
         if not self.converter:

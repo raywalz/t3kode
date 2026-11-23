@@ -280,7 +280,8 @@ function Api:setModel(id, model, progress)
     })
 end
 
---- The thread's preview browser tabs: { tabs = { {id, title, url, status, viewable}, … } }.
+--- The thread's preview browser tabs and open devices:
+--- { tabs = { {id, title, url, status, viewable}, … }, devices = { {id, name, kind, …}, … } }.
 function Api:browserTabs(id)
     return self:request("GET", "/v1/threads/" .. id .. "/browser")
 end
@@ -288,6 +289,11 @@ end
 --- Save what a browser tab shows now to `filepath`. Returns ok, error_or_content_type.
 function Api:browserSnapshot(id, tab_id, width, filepath)
     return self:download("/v1/threads/" .. id .. "/browser/snapshot", { tab = tab_id, w = width }, filepath)
+end
+
+--- Save what a simulator or emulator shows now to `filepath`. Returns ok, error_or_content_type.
+function Api:deviceSnapshot(id, device_id, width, filepath)
+    return self:download("/v1/threads/" .. id .. "/device/snapshot", { device = device_id, w = width }, filepath)
 end
 
 return Api

@@ -1385,7 +1385,53 @@ class Bridge:
                 "status": {"Loading": "loading", "LoadFailed": "failed"}.get(nav.get("_tag"), "ok"),
                 "viewable": s.get("runtime") == "server",
             })
-        return {"tabs": tabs}
+        return {"tabs": tabs, "devices": self._thread_devices(t["id"])}
+
+    def _thread_devices(self, thread_id: str, strict: bool = False) -> list[dict]:
+        """Simulators and emulators open in the thread. T3 can screenshot any device on
+        its machine, so only these are shown. A server without devices lists none."""
+        try:
+            state = self.client.devices() or {}
+        except (T3Error, OSError) as e:
+            if strict:
+                raise BridgeError(502, f"T3 wouldn't list the devices: {e}") from None
+            log.info("no device list: %s", e)
+            return []
+        known = {(d.get("hostId"), d.get("id")): d for d in state.get("devices") or []}
+        out = []
+        for s in state.get("sessions") or []:
+            if s.get("threadId") != thread_id:
+                continue
+            d = known.get((s.get("hostId"), s.get("deviceId"))) or {}
+            platform = s.get("platform") or d.get("platform") or "ios"
+            out.append({
+                "id": s.get("deviceId"),
+                "hostId": s.get("hostId"),
+                "name": d.get("name") or s.get("deviceId"),
+                "platform": platform,
+                "kind": "Android emulator" if platform == "android" else "iOS simulator",
+                "booted": bool(d.get("booted", True)),
+            })
+        return out
+
+    def device_snapshot(self, short: str, device_id: str, width: int) -> tuple[bytes, str]:
+        """What a simulator or emulator open in the thread shows now, at most `width` wide."""
+        self.last_device_at = time.monotonic()
+        t = self._thread(short)
+        dev = next((d for d in self._thread_devices(t["id"], strict=True)
+                    if d["id"] == device_id), None)
+        if dev is None:
+            raise BridgeError(404, "That device isn't open in this thread.")
+        try:
+            png = self.client.device_screenshot(dev["hostId"], device_id, dev["platform"])
+        except T3Error as e:
+            if e.status == 503:
+                raise BridgeError(503, "T3's device hub isn't running; open the device "
+                                       "in the desktop app to start it.") from None
+            raise BridgeError(502, f"T3 couldn't take a screenshot: {e}") from None
+        except OSError as e:
+            raise BridgeError(502, f"T3 couldn't take a screenshot: {e}") from None
+        return self.images.device_snapshot(png, width)
 
     def browser_snapshot(self, short: str, tab_id: str, width: int) -> tuple[bytes, str]:
         """What one tab shows right now, as an image at most `width` pixels wide."""

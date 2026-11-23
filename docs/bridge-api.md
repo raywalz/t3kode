@@ -351,11 +351,13 @@ placeholder.
 
 ### `GET /v1/threads/<id>/browser`
 
-The thread's preview browser tabs, view only:
+The thread's preview browser tabs and the simulators and emulators open in it, view only:
 
 ```json
 {"tabs": [{"id": "tab_8_…", "title": "E Ink - Wikipedia", "url": "https://…",
-           "status": "ok", "viewable": true}]}
+           "status": "ok", "viewable": true}],
+ "devices": [{"id": "6F1C…", "hostId": "local", "name": "iPhone 16 Pro", "platform": "ios",
+              "kind": "iOS simulator", "booted": true}]}
 ```
 
 `status` is `ok`, `loading` or `failed`. A blank tab has `"title": "Blank tab"` and an empty
@@ -368,6 +370,16 @@ What the tab shows right now: an image at most `w` pixels wide (grayscale PNG wi
 ImageMagick, else T3's JPEG). Sent with `cache-control: no-store`; fetch again to refresh.
 Taking one never takes control of the tab from the agent or another viewer.
 Errors: 404 if the tab closed, 409 if it isn't `viewable`, 503 if T3's browser can't start.
+
+`devices` lists only the devices open in this thread. It is empty if T3 can't list
+devices; the tabs are still listed. `platform` is `ios` or `android`.
+
+### `GET /v1/threads/<id>/device/snapshot?device=<device id>&w=<pixels>`
+
+What a simulator or emulator open in the thread shows right now, as for a tab (grayscale
+PNG with ImageMagick, else T3's PNG), with `cache-control: no-store`. Nothing is sent to
+the device. Errors: 404 if the device isn't open in this thread, 503 if T3's device hub
+isn't running, 502 if T3 can't list devices or take the screenshot.
 
 ### `POST /v1/update`
 

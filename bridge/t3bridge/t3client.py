@@ -68,6 +68,10 @@ class T3Client:
     # ---- HTTP ---------------------------------------------------------------
 
     def _http(self, method: str, path: str, query: dict | None = None, body: Any = None) -> Any:
+        raw = self._http_raw(method, path, query, body)
+        return json.loads(raw) if raw else None
+
+    def _http_raw(self, method: str, path: str, query: dict | None = None, body: Any = None) -> bytes:
         url = self.base_url + path
         if query:
             url += "?" + urllib.parse.urlencode(query)
@@ -83,7 +87,7 @@ class T3Client:
         except urllib.error.HTTPError as e:
             detail = e.read()[:500].decode(errors="replace")
             raise T3Error(f"{method} {path} -> HTTP {e.code}: {detail}", status=e.code) from None
-        return json.loads(raw) if raw else None
+        return raw
 
     def set_token(self, token: str) -> None:
         """Switch to a new token; the WebSocket reconnects with it on next use."""
@@ -336,6 +340,20 @@ class T3Client:
                     return data
         finally:
             ws.close()
+
+    def devices(self) -> dict:
+        """Every simulator and emulator T3 knows: `devices` (DeviceSummary objects) and
+        `sessions` ({threadId, hostId, deviceId, platform}), which say which thread has
+        which device open."""
+        return self.rpc("device.list", {})
+
+    def device_screenshot(self, host_id: str, device_id: str, platform: str) -> bytes:
+        """A PNG of what a simulator or emulator shows now. Reading the screen needs
+        only orchestration:read and sends nothing to the device."""
+        hub = "serve-emu" if platform == "android" else "serve-sim"
+        ticket = self._http("POST", "/api/auth/websocket-ticket/media")["ticket"]
+        return self._http_raw("GET", f"/api/device-hub/vendor/{hub}/api/screenshot",
+                              {"device": device_id, "hostId": host_id, "wsTicket": ticket})
 
     def pending_requests(self, thread_id: str) -> list[dict]:
         """Pending approvals and questions, joined the way the web app does

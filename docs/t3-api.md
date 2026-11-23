@@ -229,6 +229,21 @@ outside the workspace did ask (with `reason: "Path is outside allowed working di
   input needs `preview:operate`. Close code 4404: tab gone; 4503: the browser can't start
   on the host (`apps/server/src/preview/ServerBrowserStream.ts`). The first frame arrives at once.
 
+### Devices (simulators and emulators)
+
+- `device.list` `{}` → `{"hosts", "devices": [DeviceSummary], "sessions": [DeviceSession], …}`.
+  Needs only `orchestration:read` (with `retryHostId` or `updateTool`, `orchestration:operate`).
+  It covers every device host, not one thread. A `DeviceSummary` is `{hostId, id, platform
+  ("ios" or "android"), name, version, booted, physical}`. A `DeviceSession` is
+  `{threadId, hostId, deviceId, platform, openedAt}`: a device the thread has open. Sessions
+  are kept in the server's memory, so a restart clears them. Listing also refreshes the hosts.
+- Screenshot: `GET /api/device-hub/vendor/serve-sim/api/screenshot?device=<id>&hostId=<host>&wsTicket=<media ticket>`
+  (`serve-emu` for Android) → `image/png`, `cache-control: no-store`. Needs only
+  `orchestration:read`; input and stream settings need `orchestration:operate`. 503
+  "Device hub is not running" if the hub is down (`apps/server/src/device/DeviceHubProxy.ts`).
+  T3 doesn't check which thread has the device open, so the bridge does.
+- The `device_*` MCP tools are only for agents T3 starts; a session token can't call them.
+
 ## Change notifications (not used yet)
 
 `orchestration.subscribeShell` (`{afterSequence?}`) and

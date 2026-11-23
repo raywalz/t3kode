@@ -61,9 +61,10 @@ break it until the bridge catches up ([notes](docs/t3-api.md)).
 - **Model picker:** a thread's Model button switches the model its next turn uses, and
   a new thread can start on any model. Your T3 favorites come first, then More models…
   for the rest (minus the ones you've hidden in T3).
-- **Browser:** a thread's Browser button shows what its preview browser tabs show right
-  now, as a grayscale snapshot; Refresh takes a new one. View only: nothing is clicked,
-  and the agent keeps control. Tabs open in the desktop app's own window can't be shown.
+- **Preview:** a thread's Preview button shows what its preview browser tabs and its iOS
+  Simulator or Android Emulator show right now, as a grayscale snapshot; Refresh takes a
+  new one. View only: nothing is clicked or tapped, and the agent keeps control. Tabs open
+  in the desktop app's own window can't be shown.
 - **E-ink friendly updates:** the screen redraws only when what it shows changes, without
   a full-screen flash. Optionally, follow a turn's steps as they happen.
 - **Reconnects** when the device wakes up: KOReader turns Wi-Fi off for sleep, so with

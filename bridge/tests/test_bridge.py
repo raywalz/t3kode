@@ -13,6 +13,7 @@ from t3bridge import render
 from t3bridge.core import Bridge, BridgeError
 from t3bridge.server import serve
 from t3bridge.suggest import parse_suggestions
+from t3bridge.t3client import T3Error
 
 
 def item(o, type_, **kw):
@@ -51,6 +52,9 @@ class FakeT3:
         {"instanceId": "z", "displayName": "Broken", "enabled": True, "installed": True,
          "status": "error", "models": [{"slug": "z1", "name": "Z1"}]},
     ]
+
+    def devices(self):
+        return {"devices": [], "sessions": []}
 
     def server_config(self):
         return {"settings": {**self.settings,
@@ -1259,6 +1263,85 @@ class BrowserTests(unittest.TestCase):
             base = f"http://127.0.0.1:{httpd.server_address[1]}/v1/threads/{self.sid}/browser"
             with urllib.request.urlopen(base + "/snapshot?tab=tab_1_e&w=600", timeout=5) as r:
                 self.assertEqual((r.read(), r.headers["cache-control"]), (self.JPEG, "no-store"))
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                urllib.request.urlopen(base + "/snapshot", timeout=5)
+            self.assertEqual(cm.exception.code, 400)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+
+class DeviceTests(unittest.TestCase):
+    PNG = b"\x89PNGfake"
+
+    def setUp(self):
+        self.t3 = FakeT3()
+        self.t3.threads["t1"] = thread("t1", itemCount=0)
+        self.t3.preview_tabs = lambda tid: []
+        self.state = {
+            "devices": [
+                {"hostId": "local", "id": "SIM-1", "platform": "ios", "name": "iPhone 16", "booted": True},
+                {"hostId": "local", "id": "emu-5554", "platform": "android", "name": "Pixel 9", "booted": True},
+            ],
+            "sessions": [
+                {"threadId": "t1", "hostId": "local", "deviceId": "SIM-1", "platform": "ios"},
+                {"threadId": "t2", "hostId": "local", "deviceId": "emu-5554", "platform": "android"},
+            ],
+        }
+        self.t3.devices = lambda: self.state
+        self.shots = []
+
+        def shot(host, dev, platform):
+            self.shots.append((host, dev, platform))
+            if getattr(self, "error", None):
+                raise self.error
+            return self.PNG
+        self.t3.device_screenshot = shot
+        self.b = Bridge(self.t3, None)
+        self.b.images.converter = None
+        self.b.refresh()
+        self.sid = render.short_id("t1")
+
+    def tearDown(self):
+        self.b.close()
+
+    def test_lists_only_the_threads_devices(self):
+        self.assertEqual(self.b.browser_tabs(self.sid)["devices"], [
+            {"id": "SIM-1", "hostId": "local", "name": "iPhone 16", "platform": "ios",
+             "kind": "iOS simulator", "booted": True}])
+
+    def test_failed_device_list_still_lists_tabs(self):
+        def broken():
+            raise T3Error("unknown method")
+        self.t3.devices = broken
+        self.assertEqual(self.b.browser_tabs(self.sid), {"tabs": [], "devices": []})
+        with self.assertRaises(BridgeError) as cm:
+            self.b.device_snapshot(self.sid, "SIM-1", 800)
+        self.assertEqual(cm.exception.status, 502)
+
+    def test_snapshot(self):
+        self.assertEqual(self.b.device_snapshot(self.sid, "SIM-1", 800), (self.PNG, "image/png"))
+        self.assertEqual(self.shots, [("local", "SIM-1", "ios")])
+
+    def test_snapshot_errors(self):
+        with self.assertRaises(BridgeError) as cm:  # open in another thread
+            self.b.device_snapshot(self.sid, "emu-5554", 800)
+        self.assertEqual(cm.exception.status, 404)
+        self.assertEqual(self.shots, [])
+        for err, status in ((T3Error("hub", status=503), 503), (T3Error("x", status=500), 502),
+                            (OSError("down"), 502)):
+            self.error = err
+            with self.assertRaises(BridgeError) as cm:
+                self.b.device_snapshot(self.sid, "SIM-1", 800)
+            self.assertEqual(cm.exception.status, status)
+
+    def test_http_snapshot_is_not_cached(self):
+        httpd = serve(self.b, "127.0.0.1", 0, "")
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            base = f"http://127.0.0.1:{httpd.server_address[1]}/v1/threads/{self.sid}/device"
+            with urllib.request.urlopen(base + "/snapshot?device=SIM-1&w=600", timeout=5) as r:
+                self.assertEqual((r.read(), r.headers["cache-control"]), (self.PNG, "no-store"))
             with self.assertRaises(urllib.error.HTTPError) as cm:
                 urllib.request.urlopen(base + "/snapshot", timeout=5)
             self.assertEqual(cm.exception.code, 400)
