@@ -34,7 +34,7 @@ class TokenKeeper:
         self.env_path = env_path
         self.expires_at: datetime | None = None
         self.last_check = 0.0
-        self.last_failure = 0.0
+        self.last_failure: float | None = None  # monotonic time; None: no failure yet
         self.error: str | None = None
 
     @property
@@ -78,7 +78,8 @@ class TokenKeeper:
             self.error = self.error or "token rejected"
         left = self.days_left
         if self.command and (rejected or (left is not None and left <= RENEW_BEFORE_DAYS)):
-            if time.monotonic() - self.last_failure >= RETRY_FAILED_AFTER or rejected:
+            if (rejected or self.last_failure is None
+                    or time.monotonic() - self.last_failure >= RETRY_FAILED_AFTER):
                 self.renew()
 
     def renew(self) -> bool:

@@ -1072,6 +1072,14 @@ class TokenTests(unittest.TestCase):
         self.assertGreater(k.days_left, 29)
         self.assertIsNone(k.notice())
 
+    def test_renews_right_after_boot(self):
+        # The monotonic clock starts near zero at boot, which once looked like a recent failure.
+        from unittest import mock
+        c = self.Client(days_left=3)
+        with mock.patch("t3bridge.token.time.monotonic", return_value=5.0):
+            self.keeper(c).check()
+        self.assertEqual(c.token, "new")
+
     def test_leaves_fresh_token_alone(self):
         c = self.Client(days_left=20)
         self.keeper(c).check()
