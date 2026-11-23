@@ -201,8 +201,9 @@ def _is_subagent(t: dict) -> bool:
 
 class Bridge:
     def __init__(self, client, suggester=None, *, poll_fast: float = 2.0, poll_slow: float = 20.0,
-                 token_keeper=None, images: Images | None = None):
+                 token_keeper=None, images: Images | None = None, updater=None):
         self.client = client
+        self.updater = updater  # update.Updater: release checks and self-updates
         self.suggester = suggester
         self.token_keeper = token_keeper
         self.images = images or Images(client)
@@ -260,6 +261,9 @@ class Bridge:
             try:
                 if self.token_keeper and self.token_keeper.due():
                     self.token_keeper.check()
+                if self.updater and self.updater.due():
+                    self.updater.last_check = time.monotonic()  # one check at a time
+                    threading.Thread(target=self.updater.check, name="release-check", daemon=True).start()
                 self.refresh()
             except Exception as e:  # keep polling through T3 restarts
                 log.warning("refresh failed: %s", e)
@@ -518,6 +522,8 @@ class Bridge:
         notice = self.token_keeper.notice() if self.token_keeper else None
         if notice:
             body["notice"] = notice
+        if self.updater:
+            body["update"] = self.updater.info()
         return body
 
     def _thread_row(self, t: dict, now: str | None = None) -> dict:

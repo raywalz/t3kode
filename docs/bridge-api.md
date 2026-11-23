@@ -56,6 +56,18 @@ when one of its subagents needs attention.
 An optional `notice` (string) reports a problem with the bridge itself, such as its T3
 token expiring within a week without a T3_TOKEN_COMMAND to renew it. Show it prominently.
 
+`update` says what can be updated (also `GET /v1/update`):
+
+```json
+{"bridge": "0.1.1", "plugin": "0.1.1", "release": "0.1.2", "self_update": true, "status": "idle"}
+```
+
+`bridge` is the bridge's version and `plugin` the version of the plugin it serves; a
+device whose plugin is older offers to update it (`GET /v1/plugin`). `release` is a newer
+release, or null. With `self_update` false, `manual` says why the bridge can't update
+itself and what to do instead. `status` is `idle`, `updating`, `restarting`, or `failed`
+(with a `message`).
+
 Like the desktop inbox, the main list leaves out settled threads unless they need you
 or are working, and snoozed threads until they wake (at their time, or earlier when they
 ask for something or fail, as T3 decides). Each project carries `settled` and `snoozed`
@@ -356,6 +368,24 @@ What the tab shows right now: an image at most `w` pixels wide (grayscale PNG wi
 ImageMagick, else T3's JPEG). Sent with `cache-control: no-store`; fetch again to refresh.
 Taking one never takes control of the tab from the agent or another viewer.
 Errors: 404 if the tab closed, 409 if it isn't `viewable`, 503 if T3's browser can't start.
+
+### `POST /v1/update`
+
+`{"action": "update"}` updates the bridge to `release` in the background and returns the
+`update` object with `status: "updating"`. The bridge fetches the release tag from its git
+remote, runs its tests in a separate checkout, fast-forwards only if they pass, then
+restarts (the same process, re-executed). Poll `GET /v1/update` (requests fail briefly
+during the restart) until `bridge` is the new version or `status` is `failed`; then update
+the plugin. 409 when there's no newer release or the bridge can't update itself.
+`{"action": "check"}` looks for a release now.
+
+### `GET /v1/plugin` and `GET /v1/plugin/files/<name>`
+
+The plugin the bridge has, for the device to update itself from:
+`{"version": "0.1.1", "files": [{"path": "main.lua", "size": 74291, "sha256": "…"}, ...]}`,
+then each file's bytes. Only the plugin's own files are served. The device downloads them
+into a folder next to its own, checks every size and hash, then swaps the folders and
+reloads; any failure leaves the running plugin as it was.
 
 ### `GET /v1/health`
 

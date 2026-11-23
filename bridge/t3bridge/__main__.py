@@ -1,13 +1,16 @@
 """Run the bridge: python3 -m t3bridge [--env PATH]  (from the bridge/ directory)
 
 Or install the plugin onto an e-reader: python3 -m t3bridge install-plugin <drive> (see install.py)
+Or go back to the version before the last update: python3 -m t3bridge rollback
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
+import time
 from pathlib import Path
 
 from .config import Config, load_dotenv
@@ -16,12 +19,19 @@ from .server import serve
 from .suggest import Suggester
 from .t3client import T3Client
 from .token import TokenKeeper
+from .update import REPO, Updater, UpdateError, rollback
 
 
 def main() -> None:
     if sys.argv[1:2] == ["install-plugin"]:
         from .install import main as install_main
         raise SystemExit(install_main(sys.argv[2:]))
+    if sys.argv[1:2] == ["rollback"]:
+        try:
+            print(rollback())
+        except UpdateError as e:
+            raise SystemExit(f"rollback: {e}")
+        return
     ap = argparse.ArgumentParser(prog="t3bridge", epilog="Also: t3bridge install-plugin --help")
     ap.add_argument("--env", type=Path, default=Path(__file__).resolve().parents[2] / ".env",
                     help="dotenv file to read (default: .env at the repo root)")
@@ -43,10 +53,11 @@ def main() -> None:
                               cfg.suggest_reasoning_effort, cfg.suggest_count)
     client = T3Client(cfg.t3_url, cfg.t3_token)
     keeper = TokenKeeper(client, cfg.t3_token_command, args.env)
+    updater = Updater(enabled=cfg.update_check)
     bridge = Bridge(client, suggester, poll_fast=cfg.poll_fast, poll_slow=cfg.poll_slow,
-                    token_keeper=keeper)
+                    token_keeper=keeper, updater=updater)
     bridge.start()
-    httpd = serve(bridge, cfg.host, cfg.port, cfg.device_token)
+    httpd = serve(bridge, cfg.host, cfg.port, cfg.device_token, restart=lambda: _restart(bridge))
     logging.info("listening on http://%s:%d (suggestions %s)", cfg.host, cfg.port,
                  "on" if suggester else "off")
     try:
@@ -56,6 +67,16 @@ def main() -> None:
     finally:
         bridge.close()
         httpd.server_close()
+
+
+def _restart(bridge: Bridge) -> None:
+    """Run the updated code: replace this process with a fresh bridge, same arguments.
+    The same process ID, so a service manager such as systemd doesn't notice."""
+    time.sleep(1)  # let the reply that started the update reach the device
+    bridge.close()
+    logging.shutdown()
+    os.chdir(REPO / "bridge")
+    os.execv(sys.executable, [sys.executable, "-m", "t3bridge", *sys.argv[1:]])
 
 
 class _DemoSuggester:
@@ -71,16 +92,15 @@ class _DemoSuggester:
 
 
 def run_demo() -> None:
-    import os
-
     from .demo import DemoT3
 
     host = os.environ.get("BRIDGE_HOST", "127.0.0.1")
     port = int(os.environ.get("BRIDGE_PORT", "8787"))
     token = os.environ.get("BRIDGE_TOKEN", "")
-    bridge = Bridge(DemoT3(), _DemoSuggester(), poll_fast=1, poll_slow=5)
+    updater = Updater(enabled=os.environ.get("UPDATE_CHECK", "1").strip().lower() not in ("0", "false", "off", "no"))
+    bridge = Bridge(DemoT3(), _DemoSuggester(), poll_fast=1, poll_slow=5, updater=updater)
     bridge.start()
-    httpd = serve(bridge, host, port, token)
+    httpd = serve(bridge, host, port, token, restart=lambda: _restart(bridge))
     logging.info("demo bridge on http://%s:%d (no T3; made-up threads)", host, port)
     try:
         httpd.serve_forever()

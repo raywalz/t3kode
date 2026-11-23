@@ -1365,5 +1365,190 @@ class InstallPluginTest(unittest.TestCase):
                 bridge_url({"BRIDGE_HOST": host})
 
 
+
+class UpdateTests(unittest.TestCase):
+    """Release checks, self-update and rollback against real git repos in a temp folder."""
+
+    def setUp(self):
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        self.sp = subprocess
+        self.dir = tempfile.TemporaryDirectory()
+        root = Path(self.dir.name)
+        self.origin, self.repo = root / "origin.git", root / "clone"
+        self.git("init", "-q", "--bare", "-b", "main", str(self.origin), cwd=root)
+        self.git("init", "-q", "-b", "main", str(self.repo), cwd=root)
+        self.git("remote", "add", "origin", str(self.origin))
+        for d in ("bridge", "plugin/t3.koplugin"):
+            (self.repo / d).mkdir(parents=True)
+        self.commit("0.1.1", "first")
+        self.base = self.rev("HEAD")
+        self.git("push", "-q", "-u", "origin", "main")
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def git(self, *args, cwd=None):
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t",
+               "GIT_COMMITTER_EMAIL": "t@example.com", "PATH": __import__("os").environ["PATH"]}
+        return self.sp.run(["git", *args], cwd=cwd or self.repo, check=True, capture_output=True,
+                           text=True, env=env).stdout.strip()
+
+    def rev(self, ref):
+        return self.git("rev-parse", ref)
+
+    def commit(self, version, msg):
+        (self.repo / "plugin/t3.koplugin/_meta.lua").write_text(f'return {{ name = "t3", version = "{version}" }}\n')
+        (self.repo / "bridge/v.txt").write_text(f"{version} {msg}")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", msg)
+
+    def release(self, version):
+        """A newer release on the remote, made from another clone."""
+        other = self.repo.parent / f"rel-{version}"
+        self.git("clone", "-q", str(self.origin), str(other), cwd=self.repo.parent)
+        (other / "plugin/t3.koplugin/_meta.lua").write_text(f'return {{ name = "t3", version = "{version}" }}\n')
+        self.git("commit", "-q", "-am", f"release {version}", cwd=other)
+        self.git("tag", f"v{version}", cwd=other)
+        self.git("push", "-q", "--tags", "origin", "HEAD:main", cwd=other)
+
+    def updater(self, ok=True, version="0.1.1"):
+        import sys
+        from t3bridge.update import Updater
+        return Updater(repo=self.repo, version=version,
+                       test_command=[sys.executable, "-c", f"raise SystemExit({0 if ok else 1})"])
+
+    def test_versions_match(self):
+        from t3bridge import __version__
+        from t3bridge.update import plugin_version
+        self.assertEqual(plugin_version(), __version__)  # bump both for a release
+
+    def test_check_finds_the_newest_release_only(self):
+        up = self.updater()
+        up.check()
+        self.assertIsNone(up.latest)
+        self.release("0.1.2")
+        self.git("tag", "v0.3.0-rc1", cwd=self.repo)  # not a release (and only local)
+        up.check()
+        self.assertEqual(up.latest, "v0.1.2")
+        info = up.info()
+        self.assertEqual((info["release"], info["self_update"], info["plugin"]), ("0.1.2", True, "0.1.1"))
+        self.assertIsNone(self.updater(version="0.1.2").check() or self.updater(version="0.1.2").latest)
+
+    def test_update_tests_first_then_fast_forwards_and_rolls_back(self):
+        from t3bridge.update import rollback
+        self.release("0.1.2")
+        up = self.updater()
+        up.check()
+        up.update_to(up.latest)
+        self.assertEqual(self.rev("HEAD"), self.rev("v0.1.2^{commit}"))
+        self.assertEqual(self.git("rev-parse", "--abbrev-ref", "HEAD"), "main")  # still on the branch
+        self.assertEqual(len(self.git("worktree", "list").splitlines()), 1)  # test checkout removed
+        self.assertIn("0.1.1", rollback(repo=self.repo))
+        self.assertEqual(self.rev("HEAD"), self.base)
+
+    def test_failed_tests_change_nothing(self):
+        from t3bridge.update import UpdateError
+        self.release("0.1.2")
+        up = self.updater(ok=False)
+        up.check()
+        with self.assertRaises(UpdateError) as e:
+            up.update_to(up.latest)
+        self.assertIn("tests failed", str(e.exception))
+        self.assertEqual(self.rev("HEAD"), self.base)
+        self.assertEqual(len(self.git("worktree", "list").splitlines()), 1)
+
+    def test_refuses_local_changes_and_diverged_checkouts(self):
+        from t3bridge.update import UpdateError
+        self.release("0.1.2")
+        up = self.updater()
+        up.check()
+        (self.repo / "bridge/v.txt").write_text("edited")
+        self.assertIn("local changes", up.blocker())
+        self.assertFalse(up.info()["self_update"])
+        self.assertIn("git pull", up.info()["manual"])
+        with self.assertRaises(UpdateError):
+            up.start(lambda: None)
+        self.git("checkout", "--", ".")
+        self.commit("0.1.1", "a local commit")
+        with self.assertRaises(UpdateError) as e:
+            up.update_to(up.latest)
+        self.assertIn("by hand", str(e.exception))
+
+    def test_start_runs_in_the_background_and_restarts(self):
+        import time as _time
+        self.release("0.1.2")
+        up = self.updater()
+        up.check()
+        restarted = threading.Event()
+        up.start(restarted.set)
+        self.assertTrue(restarted.wait(30))
+        self.assertEqual(up.status, "restarting")
+        self.assertEqual(self.rev("HEAD"), self.rev("v0.1.2^{commit}"))
+        _time.sleep(0)
+
+    def test_failure_can_be_retried_and_a_newer_release_clears_it(self):
+        self.release("0.1.2")
+        up = self.updater(ok=False)
+        up.check()
+        for _attempt in range(2):  # a failed update can be tried again
+            up.start(lambda: None)
+            for _i in range(300):
+                if up.status != "updating":
+                    break
+                time.sleep(0.05)
+            self.assertEqual((up.status, up.failed_tag), ("failed", "v0.1.2"))
+            self.assertIn("tests failed", up.info()["message"])
+        up.check()  # the same release: the failure still applies
+        self.assertEqual(up.status, "failed")
+        self.release("0.1.3")
+        up.check()
+        self.assertEqual((up.status, up.latest, up.info().get("message")), ("idle", "v0.1.3", None))
+
+    def test_no_remote_is_quiet(self):
+        self.git("remote", "remove", "origin")
+        up = self.updater()
+        up.check()
+        self.assertIsNone(up.latest)
+        self.assertTrue(up.last_failed)
+
+    def test_plugin_files_are_served_by_name_only(self):
+        import hashlib
+        from t3bridge.update import UpdateError, plugin_file, plugin_manifest
+        m = plugin_manifest()
+        names = [f["path"] for f in m["files"]]
+        self.assertIn("main.lua", names)
+        self.assertIn("cacert.pem", names)
+        main = next(f for f in m["files"] if f["path"] == "main.lua")
+        self.assertEqual(hashlib.sha256(plugin_file("main.lua")).hexdigest(), main["sha256"])
+        for bad in ("../README.md", ".hidden", "nope.lua", "sub/main.lua"):
+            with self.assertRaises(UpdateError):
+                plugin_file(bad)
+
+
+class UpdateHttpTests(HttpTests):
+    def setUp(self):
+        from t3bridge.update import Updater
+        super().setUp()
+        self.b.updater = Updater(enabled=False)
+
+    def test_update_routes(self):
+        status, body = self.req("/v1/threads")
+        self.assertEqual((status, body["update"]["bridge"], body["update"]["release"]),
+                         (200, __import__("t3bridge").__version__, None))
+        status, manifest = self.req("/v1/plugin")
+        self.assertEqual(status, 200)
+        self.assertTrue(any(f["path"] == "t3_api.lua" for f in manifest["files"]))
+        r = urllib.request.Request(self.base + "/v1/plugin/files/t3_api.lua",
+                                   headers={"authorization": "Bearer secret"})
+        with urllib.request.urlopen(r, timeout=5) as resp:
+            self.assertIn(b"HTTP client", resp.read())
+        self.assertEqual(self.req("/v1/plugin/files/..%2Fx")[0], 404)
+        self.assertEqual(self.req("/v1/plugin", token="wrong")[0], 401)
+        self.assertEqual(self.req("/v1/update", {"action": "update"})[0], 409)  # no restart, no release
+        self.assertEqual(self.req("/v1/update", {"action": "nope"})[0], 400)
+
+
 if __name__ == "__main__":
     unittest.main()

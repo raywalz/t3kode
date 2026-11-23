@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from .core import Bridge, BridgeError
 from .images import ImageError
+from .update import UpdateError, plugin_file, plugin_manifest
 
 log = logging.getLogger("t3bridge.http")
 
@@ -45,7 +46,7 @@ def _mode(body: dict) -> str | None:
     return mode if isinstance(mode, str) and mode else None
 
 
-def make_handler(bridge: Bridge, device_token: str):
+def make_handler(bridge: Bridge, device_token: str, restart=None):
     routes = [
         ("GET", re.compile(r"^/v1/health$"), "health"),
         ("GET", re.compile(r"^/v1/threads$"), "list"),
@@ -64,6 +65,10 @@ def make_handler(bridge: Bridge, device_token: str):
         ("POST", re.compile(r"^/v1/threads/(\w+)/action$"), "action"),
         ("GET", re.compile(r"^/v1/threads/(\w+)/browser$"), "browser"),
         ("GET", re.compile(r"^/v1/threads/(\w+)/browser/snapshot$"), "browser_snapshot"),
+        ("GET", re.compile(r"^/v1/update$"), "update_info"),
+        ("POST", re.compile(r"^/v1/update$"), "update"),
+        ("GET", re.compile(r"^/v1/plugin$"), "plugin"),
+        ("GET", re.compile(r"^/v1/plugin/files/([\w.-]+)$"), "plugin_file"),
     ]
 
     class Handler(BaseHTTPRequestHandler):
@@ -127,6 +132,8 @@ def make_handler(bridge: Bridge, device_token: str):
                             self._send(200, result)
                     except (BridgeError, ImageError) as e:
                         self._send(e.status, {"error": str(e)})
+                    except UpdateError as e:
+                        self._send(409, {"error": str(e)})
                     except Exception as e:
                         log.exception("request failed")
                         self._send(502, {"error": f"T3 request failed: {e}"})
@@ -154,6 +161,31 @@ def make_handler(bridge: Bridge, device_token: str):
             body = bridge.thread_list(limit=_int(q, "limit", 8, 1, 200), project=project)
             body["changed"] = changed
             return body
+
+        def _updater(self):
+            if not bridge.updater:
+                raise BridgeError(404, "updates aren't available here")
+            return bridge.updater
+
+        def r_update_info(self, q):
+            return self._updater().info()
+
+        def r_update(self, q):
+            action = self._body().get("action")
+            if action == "check":
+                self._updater().check()
+                return self._updater().info()
+            if action == "update":
+                if restart is None:
+                    raise BridgeError(409, "this bridge can't restart itself")
+                return self._updater().start(restart)
+            raise BridgeError(400, "action is `check` or `update`")
+
+        def r_plugin(self, q):
+            return plugin_manifest()
+
+        def r_plugin_file(self, q, name):
+            return plugin_file(name), "application/octet-stream", "no-store"
 
         def r_image(self, q, image_id):
             return bridge.images.get(image_id, _int(q, "w", 1000, 64, 4000))
@@ -252,7 +284,8 @@ class _Server(ThreadingHTTPServer):
             super().handle_error(request, client_address)
 
 
-def serve(bridge: Bridge, host: str, port: int, device_token: str) -> ThreadingHTTPServer:
-    httpd = _Server((host, port), make_handler(bridge, device_token))
+def serve(bridge: Bridge, host: str, port: int, device_token: str, restart=None) -> ThreadingHTTPServer:
+    """`restart()` runs the bridge again after a self-update (see update.Updater)."""
+    httpd = _Server((host, port), make_handler(bridge, device_token, restart))
     httpd.daemon_threads = True
     return httpd

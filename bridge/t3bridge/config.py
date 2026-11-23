@@ -45,6 +45,8 @@ class Config:
     # Optional command that prints a fresh T3 token (e.g. `t3 auth session issue ... --token-only`).
     # The bridge runs it when its token is about to expire or is rejected.
     t3_token_command: str = ""
+    # Look for new T3 KOde releases on the checkout's git remote about once a day.
+    update_check: bool = True
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -66,6 +68,7 @@ class Config:
             poll_fast=float(env.get("POLL_FAST", "2")),
             poll_slow=float(env.get("POLL_SLOW", "20")),
             t3_token_command=env.get("T3_TOKEN_COMMAND", ""),
+            update_check=env.get("UPDATE_CHECK", "1").strip().lower() not in ("0", "false", "off", "no"),
         )
         if not cfg.device_token and not cfg.listens_on_loopback_only:
             raise SystemExit(

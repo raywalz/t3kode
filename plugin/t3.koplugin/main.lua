@@ -418,6 +418,8 @@ function T3:listItems(body, project_filter)
     if str(body.notice) then
         table.insert(items, 1, { text = "! " .. str(body.notice), bold = true })
     end
+    local update = type(body.update) == "table" and self:updateRow(body.update) or nil
+    if update then table.insert(items, 1, update) end
     return items
 end
 
@@ -773,6 +775,169 @@ function T3:reloadPlugin()
             notify(T(_("Couldn't reload the T3 plugin; still running the old code.\n%1"), tostring(new)), 10)
         end
     end)
+end
+
+-- ---------------------------------------------------------------------------
+-- updating: a newer release updates the bridge (it tests, updates and restarts itself),
+-- then the plugin updates from the bridge's copy, so the two always match.
+
+local function versionParts(v)
+    local a, b, c = tostring(v or ""):match("^v?(%d+)%.(%d+)%.(%d+)$")
+    if a then return { tonumber(a), tonumber(b), tonumber(c) } end
+end
+
+--- True when version a is newer than version b.
+local function isNewer(a, b)
+    local x, y = versionParts(a), versionParts(b)
+    if not x or not y then return false end
+    for i = 1, 3 do
+        if x[i] ~= y[i] then return x[i] > y[i] end
+    end
+    return false
+end
+
+--- Delete a folder this plugin made next to itself (only those: see T3:updatePlugin).
+local function removeTree(path)
+    if not (path:match("%.koplugin%.new$") or path:match("%.koplugin%.old$")) then return end
+    local function remove(p)
+        local mode = lfs.attributes(p, "mode")
+        if mode == "directory" then
+            for name in lfs.dir(p) do
+                if name ~= "." and name ~= ".." then remove(p .. "/" .. name) end
+            end
+            lfs.rmdir(p)
+        elseif mode then
+            os.remove(p)
+        end
+    end
+    remove(path)
+end
+
+function T3:pluginVersion()
+    local ok, meta = pcall(dofile, self.path .. "/_meta.lua")
+    return ok and type(meta) == "table" and meta.version or nil
+end
+
+--- The list's top row for an update, or nil when there's nothing to say.
+function T3:updateRow(up)
+    local status = str(up.status)
+    if status == "updating" or status == "restarting" then
+        return { text = _("Updating T3 KOde…"), bold = true }
+    elseif status == "failed" then
+        return { text = "! " .. _("The update didn't work. Tap for why."), bold = true, callback = function()
+            local why = T(_("Nothing was changed: %1."), str(up.message) or _("no reason given"))
+            if str(up.release) and up.self_update == true then
+                UIManager:show(ConfirmBox:new{
+                    text = why, ok_text = _("Try again"),
+                    ok_callback = function() self:updateBridge(up.release) end,
+                })
+            else
+                notify(why, 20)
+            end
+        end }
+    elseif str(up.release) then
+        return { text = "↑  " .. T(_("T3 KOde %1 is available"), up.release), bold = true, callback = function()
+            self:confirmUpdate(up)
+        end }
+    elseif isNewer(up.plugin, self:pluginVersion()) then
+        return { text = "↑  " .. T(_("Update the T3 plugin to %1"), up.plugin), bold = true, callback = function()
+            self:updatePlugin()
+        end }
+    end
+end
+
+function T3:confirmUpdate(up)
+    if up.self_update ~= true then
+        notify(str(up.manual) or _("Update the bridge on the computer running it: git pull, then restart it."), 20)
+        return
+    end
+    UIManager:show(ConfirmBox:new{
+        text = T(_("Update T3 KOde to %1?\n\nThe bridge tests the new version, updates and restarts. Then this plugin updates too. It takes a minute or two."), up.release),
+        ok_text = _("Update"),
+        ok_callback = function() self:updateBridge(up.release) end,
+    })
+end
+
+function T3:updateBridge(release)
+    local ok, err = withBusy(_("Starting the update…"), function()
+        return self.api:request("POST", "/v1/update", nil, { action = "update" })
+    end)
+    if not ok then
+        notify(T(_("Couldn't start the update: %1"), err), 10)
+        return
+    end
+    local msg = InfoMessage:new{
+        text = T(_("Updating T3 KOde to %1…\nThe bridge tests the new version first, then restarts."), release),
+        dismissable = false,
+    }
+    UIManager:show(msg)
+    local deadline = os.time() + 15 * 60
+    local function poll()
+        -- While the bridge restarts, requests fail; keep asking.
+        local got, info = self.api:request("GET", "/v1/update", nil, nil, { 4, 8 })
+        if got and str(info.status) == "failed" then
+            UIManager:close(msg)
+            notify(T(_("The update didn't work. Nothing was changed: %1."), str(info.message) or _("no reason given")), 20)
+            pcall(function() self:refreshList(true) end)
+        elseif got and info.bridge == release then
+            UIManager:close(msg)
+            self:updatePlugin()
+        elseif os.time() > deadline then
+            UIManager:close(msg)
+            notify(_("The bridge hasn't come back after updating. Check it on the computer running it."), 20)
+        else
+            UIManager:scheduleIn(3, poll)
+        end
+    end
+    UIManager:scheduleIn(3, poll)
+end
+
+--- Download the bridge's copy of the plugin next to this one, check every file, then
+--- swap the folders and reload. Any failure leaves the running plugin as it was.
+function T3:updatePlugin()
+    local sha2 = require("ffi/sha2")
+    local new_dir, old_dir = self.path .. ".new", self.path .. ".old"
+    local ok, err = withBusy(_("Updating the T3 plugin…"), function()
+        local got, manifest = self.api:request("GET", "/v1/plugin")
+        if not got then return false, manifest end
+        if type(manifest.files) ~= "table" or #manifest.files == 0 then
+            return false, _("The bridge sent no plugin files.")
+        end
+        removeTree(new_dir)
+        if not lfs.mkdir(new_dir) then return false, T(_("Can't write %1"), new_dir) end
+        for _i, f in ipairs(manifest.files) do
+            local name = str(f.path)
+            if not name or not name:match("^[%w%._%-]+$") or name:sub(1, 1) == "." then
+                return false, _("The bridge sent an odd file name.")
+            end
+            local target = new_dir .. "/" .. name
+            local done, derr = self.api:download("/v1/plugin/files/" .. name, nil, target)
+            if not done then return false, derr end
+            local fh = io.open(target, "rb")
+            local data = fh and fh:read("*a")
+            if fh then fh:close() end
+            if not data or #data ~= tonumber(f.size) or sha2.sha256(data) ~= f.sha256 then
+                return false, T(_("%1 didn't arrive intact."), name)
+            end
+        end
+        removeTree(old_dir)
+        local moved, merr = os.rename(self.path, old_dir)
+        if not moved then return false, merr end
+        local placed, perr = os.rename(new_dir, self.path)
+        if not placed then
+            os.rename(old_dir, self.path)
+            return false, perr
+        end
+        removeTree(old_dir)
+        return true
+    end)
+    if not ok then
+        removeTree(new_dir)
+        notify(T(_("Couldn't update the T3 plugin, so it's unchanged: %1"), tostring(err)), 15)
+        return
+    end
+    logger.info("t3: plugin updated to", self:pluginVersion())
+    self:reloadPlugin()
 end
 
 -- ---------------------------------------------------------------------------

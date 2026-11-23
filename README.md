@@ -195,15 +195,32 @@ error if it can't connect yet), and set **Bridge address** and **Bridge token**.
 Then open **T3 KOde**, the first item in the Tools tab. You can also bind it to a
 gesture: the action is "T3 KOde threads".
 
-To update the plugin, run `install-plugin` again or copy the new files over it, then
-choose **Reload T3 plugin** (from
-the list's menu button, or hold an open thread's title). It loads the new code without
-restarting KOReader and reopens what you had open. Gesture action: "Reload T3 plugin".
-
 Your KOReader gestures keep working inside the plugin: edge swipes for brightness
 and warmth, multiswipes, corner taps, and swiping down from the top for KOReader's
 menu. Swipes go to your gestures first; taps and holds only when they miss a button,
 link, or list item.
+
+## Updating
+
+When there's a new release, the thread list says so at the top. Tap it, then
+**Update**: the bridge tests the new version, updates itself and restarts, and then the
+plugin updates from the bridge. If the new version's tests fail, nothing changes. A
+plugin older than its bridge (say, after you updated the bridge by hand) gets an
+**Update the T3 plugin** row of its own.
+
+The bridge updates itself only when it runs from a git clone with no local changes,
+and only by fast-forwarding to a release tag of that clone's own remote. Otherwise the
+row says what's in the way, and you update by hand: `git pull`, restart the bridge,
+then tap **Update the T3 plugin** on the e-reader (or run `install-plugin` again).
+
+- `python3 -m t3bridge rollback` goes back to the version before the last update;
+  restart the bridge afterwards.
+- The bridge looks for releases about once a day by asking its git remote for tags.
+  `UPDATE_CHECK=0` in `.env` turns that off.
+- **Reload T3 plugin** (in the list's menu, or hold an open thread's title; also a
+  gesture) loads plugin files you copied over by hand without restarting KOReader.
+
+Updating from 0.1.0, which can't update itself yet, is by hand once.
 
 ## Trying it without T3
 
