@@ -1,5 +1,5 @@
 --[[--
-HTTP client for the t3-koreader bridge (docs/bridge-api.md).
+HTTP client for the T3 KOde bridge (docs/bridge-api.md).
 
 Calls are synchronous: KOReader's UI runs on one thread, so every call here
 blocks the screen until it returns. Keep timeouts short and never long-poll.
@@ -124,7 +124,7 @@ end
 --- `timeouts`: { connect, total } seconds, instead of the usual 10 and 30.
 function Api:request(method, path, params, body, timeouts)
     if not self:configured() then
-        return false, "Set the bridge address first (Tools → More tools → T3 Code settings)."
+        return false, "Set the bridge address first (Tools → T3 KOde → menu → Settings)."
     end
     local sink = {}
     local data = body and JSON.encode(body) or nil

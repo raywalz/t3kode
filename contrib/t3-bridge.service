@@ -1,7 +1,7 @@
-# systemd user service for the t3-koreader bridge.
+# systemd user service for the T3 KOde bridge.
 #
 # Install (adjust the path to your checkout):
-#   sed "s#@REPO@#$HOME/path/to/t3-koreader#" contrib/t3-bridge.service \
+#   sed "s#@REPO@#$HOME/path/to/t3kode#" contrib/t3-bridge.service \
 #       > ~/.config/systemd/user/t3-bridge.service
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now t3-bridge
@@ -10,7 +10,7 @@
 # Logs: journalctl --user -u t3-bridge -f
 
 [Unit]
-Description=t3-koreader bridge (T3 Code for e-readers)
+Description=T3 KOde bridge (T3 Code for e-readers)
 # If T3 or the BRIDGE_HOST address (e.g. a VPN interface) isn't up yet at boot,
 # the bridge exits and systemd retries until it is.
 After=network-online.target

@@ -1,7 +1,10 @@
-# t3-koreader
+# T3 KOde
 
-Read and reply to [T3 Code](https://github.com/pingdotgg/t3code) threads from an
-e-reader running [KOReader](https://koreader.rocks) (Kobo, Kindle, PocketBook, …).
+**T3 Code for e-readers**
+
+A [KOReader](https://koreader.rocks) plugin (Lua) that talks to [T3 Code](https://github.com/pingdotgg/t3code)
+through a small bridge (Python) on your computer. Read and reply to threads on a Kobo,
+Kindle, PocketBook, or anything else that runs KOReader.
 
 Replying is tap-first: answer the agent's questions and approvals with a tap, pick
 one of a few suggested replies, or tap Continue / Summarize / Stop. The on-screen
@@ -79,7 +82,7 @@ plugin. You don't need SSH access to the e-reader; a USB cable is enough.
 Needs Python 3.12 and a T3 Code server on the same machine. There are no dependencies.
 
 ```sh
-git clone https://github.com/raywalz/t3-koreader && cd t3-koreader
+git clone https://github.com/raywalz/t3kode && cd t3kode
 cp .env.example .env    # then fill it in; every setting is explained there
 cd bridge && python3 -m t3bridge
 ```
@@ -157,11 +160,11 @@ Over USB, with no typing on the e-reader:
 4. Eject the e-reader and restart KOReader.
 
 Or copy only the plugin, and enter the settings on the e-reader: open **Tools → T3
-Code**, tap the menu button at the top left → **Settings** (or **Settings** on the
+KOde**, tap the menu button at the top left → **Settings** (or **Settings** on the
 error if it can't connect yet), and set **Bridge address** and **Bridge token**.
 
-Then open **T3 Code**, the first item in the Tools tab. You can also bind it to a
-gesture: the action is "T3 Code threads".
+Then open **T3 KOde**, the first item in the Tools tab. You can also bind it to a
+gesture: the action is "T3 KOde threads".
 
 To update the plugin, copy the new files over it, then choose **Reload T3 plugin** (from
 the list's menu button, or hold an open thread's title). It loads the new code without

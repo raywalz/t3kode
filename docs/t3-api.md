@@ -29,7 +29,7 @@ Source paths below are relative to the T3 Code repo.
 
 ```sh
 t3 auth session issue --scope orchestration:read --scope orchestration:operate \
-    --label t3-koreader --ttl 30d --token-only
+    --label t3kode --ttl 30d --token-only
 ```
 
 - Without `--scope`, the token gets every scope, including terminal and access

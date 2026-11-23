@@ -1,7 +1,7 @@
 --[[--
 T3 Code client for KOReader.
 
-Shows T3 Code threads from a t3-koreader bridge and lets you reply with a tap.
+Shows T3 Code threads from a T3 KOde bridge and lets you reply with a tap.
 All T3-specific work happens on the bridge; this plugin renders what it gets.
 
 @module koplugin.t3
@@ -62,7 +62,7 @@ function T3:init()
     self.settings = LuaSettings:open(DataStorage:getSettingsDir() .. "/t3.lua")
     self:makeApi()
     Dispatcher:registerAction("t3_open", {
-        category = "none", event = "T3Open", title = _("T3 Code threads"), general = true,
+        category = "none", event = "T3Open", title = _("T3 KOde threads"), general = true,
     })
     Dispatcher:registerAction("t3_reload", {
         category = "none", event = "T3Reload", title = _("Reload T3 plugin"), general = true,
@@ -75,7 +75,7 @@ function T3:makeApi()
     bridge_api = self.api
 end
 
--- Put "T3 Code" first in the Tools tab of both the file browser and the reader.
+-- Put "T3 KOde" first in the Tools tab of both the file browser and the reader.
 -- The menu order tables are shared modules that plugins may extend (KOReader's own
 -- ui/plugin/insert_menu does the same for "More tools"). Done once per process.
 local function placeFirstInTools()
@@ -95,7 +95,7 @@ function T3:addToMainMenu(menu_items)
     placeFirstInTools()
     -- One tap from the Tools tab opens the thread list.
     menu_items.t3 = {
-        text = _("T3 Code"),
+        text = _("T3 KOde"),
         callback = function() self:onT3Open() end,
     }
 end
@@ -151,7 +151,7 @@ function T3:showSettings()
     local url = self.settings:readSetting("bridge_url")
     local token = self.settings:readSetting("bridge_token")
     dialog = ButtonDialog:new{
-        title = _("T3 Code settings"),
+        title = _("T3 KOde settings"),
         buttons = {
             {{
                 text = self:showProgress() and _("Show progress while working: on")

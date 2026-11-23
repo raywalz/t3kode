@@ -72,7 +72,7 @@ def exercise_requests(client: T3Client, tid: str) -> None:
     # Approval: in approval-required mode a shell command needs the user's OK. Decline it.
     # (Read-only commands such as `echo` may be auto-approved, so ask for a file write.)
     n = item_count(client, tid)
-    client.send_message(tid, "Use your file-writing tool to create /tmp/t3-koreader-approval-test.txt "
+    client.send_message(tid, "Use your file-writing tool to create /tmp/t3kode-approval-test.txt "
                              "containing 'hi'. If it is declined, reply DECLINED and stop.")
     p = wait_pending(client, tid, n)
     req, item = p["request"], p["item"] or {}
@@ -159,7 +159,7 @@ def main() -> int:
     # 2. Create a throwaway thread with a first message.
     launched = client.launch_thread(
         project["id"],
-        "t3-koreader API test (safe to delete)",
+        "T3 KOde API test (safe to delete)",
         "This is an automated API test. Reply with exactly the word PONG and nothing else. "
         "Do not use any tools.",
         selection,
