@@ -18,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from t3bridge.core import first_ready_model  # noqa: E402
 from t3bridge.t3client import T3Client  # noqa: E402
 
 BUSY = {"queued", "preparing", "starting", "running", "waiting"}  # LIVE_SHELL_STATUSES upstream
@@ -148,12 +149,14 @@ def main() -> int:
         instance, model = args.model.split("/", 1)
         selection = {"instanceId": instance, "model": model}
     else:
-        settings = client.server_config().get("settings") or {}
+        config = client.server_config()
+        settings = config.get("settings") or {}
         override = (settings.get("projectSettingsOverrides") or {}).get(project["id"]) or {}
         selection = (override.get("defaultModelSelection") or project.get("defaultModelSelection")
-                     or settings.get("defaultModelSelection") or settings.get("fallbackModelSelection"))
+                     or settings.get("defaultModelSelection") or settings.get("fallbackModelSelection")
+                     or first_ready_model(config.get("providers") or []))
         if not selection:
-            print("T3 has no default model; pass --model instanceId/model")
+            print("No agent is ready in T3; pass --model instanceId/model")
             return 1
 
     # 2. Create a throwaway thread with a first message.

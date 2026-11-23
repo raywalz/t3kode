@@ -691,6 +691,27 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.t3.calls[-1][2]["runtime_mode"], "approval-required")
         self.assertIsNone(self.t3.calls[-1][2]["workspace"])  # no worktree default: the root
 
+    def test_start_thread_on_a_fresh_t3_uses_first_ready_provider(self):
+        # A new install: no default model anywhere and no earlier thread in the project.
+        self.t3.settings = {"defaultRuntimeMode": "full-access", "projectSettingsOverrides": {}}
+        self.t3.providers = [dict(FakeT3.providers[2]),  # status error: skipped
+                             dict(FakeT3.providers[1], models=[{"slug": "a", "isCustom": True}, {"slug": "b"},
+                                                               {"slug": "c", "isDefault": True}])]
+        self.t3.projects.append({"id": "p3", "title": "Gamma"})
+        self.b.refresh()
+        self.assertEqual(self.b.models(project=render.short_id("p3"))["current_label"], "c")
+        self.b.start_thread(render.short_id("p3"), "Hello", client_msg_id="f1")
+        self.assertEqual(self.t3.calls[-1][1][3], {"instanceId": "y", "model": "c"})
+
+    def test_first_ready_model(self):
+        from t3bridge.core import first_ready_model
+        warn = {"instanceId": "w", "status": "warning", "models": [{"slug": "w1"}]}
+        ready = {"instanceId": "r", "status": "ready", "models": [{"slug": "r1"}, {"slug": "r2", "isDefault": True}]}
+        off = {"instanceId": "o", "status": "ready", "enabled": False, "models": [{"slug": "o1"}]}
+        self.assertEqual(first_ready_model([off, warn, ready]), {"instanceId": "r", "model": "r2"})
+        self.assertEqual(first_ready_model([off, warn]), {"instanceId": "w", "model": "w1"})
+        self.assertIsNone(first_ready_model([off, {"instanceId": "e", "status": "error", "models": [{"slug": "e"}]}]))
+
     def test_start_thread_follows_worktree_default(self):
         self.t3.settings["defaultThreadEnvMode"] = "worktree"
         self.b.start_thread(render.short_id("p1"), "In a worktree", client_msg_id="w1")

@@ -173,6 +173,23 @@ def _shelved(t: dict) -> bool:
     return _is_settled(t) and render.thread_state(t) not in ("needs_you", "working")
 
 
+def first_ready_model(providers: list[dict]) -> dict | None:
+    """The model T3's app starts a new thread with when no default is set: the first
+    healthy provider's default model (web providerInstances.ts,
+    resolveProjectDefaultProviderModelSelection and getDefaultProviderInstanceModel)."""
+    usable = [p for p in providers if p.get("enabled", True) and p.get("installed", True)
+              and p.get("models")]
+    for wanted in ("ready", "warning"):
+        for p in usable:
+            if p.get("status") != wanted:
+                continue
+            models = p["models"]
+            m = (next((m for m in models if m.get("isDefault") and not m.get("isCustom")), None)
+                 or next((m for m in models if not m.get("isCustom")), None) or models[0])
+            return {"instanceId": p.get("instanceId") or p.get("provider"), "model": m["slug"]}
+    return None
+
+
 def _is_subagent(t: dict) -> bool:
     """Threads an agent started under another thread. They live under their parent,
     as in the desktop sidebar. Forks the user made are ordinary threads."""
@@ -1039,7 +1056,8 @@ class Bridge:
         server-wide default. Read fresh each time so a change made on the desktop applies
         at once. The workspace is None for the project root, or when `workspace` is False
         (only the model and mode are wanted)."""
-        settings = self._server_config(fresh=True).get("settings") or {}
+        config = self._server_config(fresh=True)
+        settings = config.get("settings") or {}
         override = (settings.get("projectSettingsOverrides") or {}).get(pid) or {}
         model = (override.get("defaultModelSelection") or project.get("defaultModelSelection")
                  or settings.get("defaultModelSelection") or settings.get("fallbackModelSelection"))
@@ -1050,7 +1068,10 @@ class Bridge:
                          key=lambda t: t.get("createdAt") or "", default=None)
             model = (recent or {}).get("modelSelection")
         if not model:
-            raise BridgeError(409, "no default model is set in T3")
+            # A fresh install: the app then offers its first working provider's default model.
+            model = first_ready_model(config.get("providers") or [])
+        if not model:
+            raise BridgeError(409, "no agent is ready in T3: install and sign in to one first")
         # T3's own default when the setting is absent.
         runtime = override.get("defaultRuntimeMode") or settings.get("defaultRuntimeMode") or "full-access"
         env_mode = (override.get("defaultThreadEnvMode") or project.get("defaultThreadEnvMode")

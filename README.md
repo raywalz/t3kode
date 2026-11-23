@@ -21,7 +21,7 @@ keyboard is there for everything else.
 <img src="docs/screenshots/approval.png" width="48%" alt="A thread waiting for approval, with Allow, Allow for session and Decline buttons">
 </p>
 
-Status: experimental, but in daily use on a Kobo Clara BW. Tested with T3 Code 0.1.12. The
+Status: experimental, but in daily use on a Kobo Clara BW. Tested with T3 Code 0.1.11. The
 bridge uses T3's internal API, which can change in any T3 release, so a T3 update may
 break it until the bridge catches up ([notes](docs/t3-api.md)).
 

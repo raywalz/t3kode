@@ -309,7 +309,8 @@ the thread in plan mode; the rest still comes from your settings.
 Starts a thread and returns its view. The thread uses your own T3 settings, as a
 new thread in the app would: the model, permission mode and workspace come from
 the project's overrides if it has any, otherwise from the server-wide defaults
-(Settings → default model / runtime mode / new threads in). With the worktree
+(Settings → default model / runtime mode / new threads in). With no default model set
+anywhere, as on a new install, it's the first ready agent's default model, as in the app. With the worktree
 default, the thread gets a new worktree from the branch the project's checkout
 is on, fetched from the remote first if "start from origin" is on. Otherwise it
 runs in the project root. Settings are read fresh for every new thread, so

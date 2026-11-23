@@ -5,8 +5,9 @@ contracts source (`apps/server/src`, `packages/contracts/src`,
 `packages/client-runtime/src` in the T3 Code repo) and checked against a live
 server by `bridge/api_test.py`.
 
-Checked against: T3 Code server 0.1.12 and `main` as of 2026-11. Every endpoint,
-RPC method, and command used below exists in both with the same shape. Orchestration protocol version: **2**.
+Checked against: T3 Code 0.1.11 (the release; every bridge feature tested against a
+live server) and `main` as of 2026-11. Every endpoint, RPC method, and command used
+below exists in both with the same shape. Orchestration protocol version: **2**.
 
 Source paths below are relative to the T3 Code repo.
 
