@@ -439,7 +439,7 @@ function T3:showList(project_id, title)
     end
     local menu
     menu = Menu:new{
-        title = title or _("T3 Code"),
+        title = title or _("KOde"),
         item_table = self:listItems(body, project_id),
         is_popout = false,
         is_borderless = true,
