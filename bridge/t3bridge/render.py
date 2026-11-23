@@ -109,6 +109,56 @@ def context_usage(projection: dict) -> dict | None:
             "label": f"{percent}% of context used ({format_tokens(used)} of {format_tokens(max_)})"}
 
 
+_ACTIVE_RUN = {"preparing", "starting", "running", "waiting"}
+
+
+def active_run(projection: dict) -> dict | None:
+    return next((r for r in reversed(projection.get("runs") or []) if r.get("status") in _ACTIVE_RUN), None)
+
+
+def queue_state(projection: dict) -> dict | None:
+    """Messages waiting for the running turn to end, as the app's queue above the
+    composer lists them (T3's deriveThreadQueueWorkflowState): oldest first, with what
+    can be done with them. None when nothing is queued.
+    {items: [{id, run, text}], held, can_send_now, can_steer}"""
+    runs = projection.get("runs") or []
+    messages = {m.get("id"): m for m in projection.get("messages") or [] if isinstance(m, dict)}
+    automatic = {mid for mid, m in messages.items()
+                 if m.get("delegatedCompletion") is not None or m.get("notification") is not None}
+    queued = [r for r in runs if r.get("status") == "queued" and r.get("userMessageId") not in automatic]
+    if not queued:
+        return None
+    queued.sort(key=lambda r: (r["queuePosition"] if r.get("queuePosition") is not None else r.get("ordinal", 0),
+                               r.get("ordinal", 0)))
+    active = active_run(projection)
+    # The provider session the active run (else the thread) uses, for its steering support.
+    pt_id = (active or {}).get("providerThreadId") or (projection.get("thread") or {}).get("activeProviderThreadId")
+    pts = projection.get("providerThreads") or []
+    pt = next((p for p in pts if p.get("id") == pt_id), None) or next(
+        (p for p in pts if p.get("providerSessionId")), None)
+    sessions = projection.get("providerSessions") or []
+    sid = (pt or {}).get("providerSessionId")
+    session = next((s for s in sessions if s.get("id") == sid), None) if sid else next(
+        (s for s in reversed(sessions) if s.get("status") not in ("stopped", "error")), None)
+    turns_caps = (((session or {}).get("capabilities") or {}).get("turns")) or {}
+    steerable = bool(active and active.get("status") == "running" and active.get("activeAttemptId") and any(
+        t.get("runAttemptId") == active["activeAttemptId"] and t.get("status") == "running"
+        for t in projection.get("providerTurns") or []))
+    thread = projection.get("thread") or {}
+    items = []
+    for r in queued:
+        m = messages.get(r.get("userMessageId")) or {}
+        text = ((m.get("context") or {}).get("guest") or {}).get("text") or m.get("text") or "Queued message"
+        items.append({"id": short_id(r["id"]), "run": r["id"], "text": user_message(text.strip())[0]})
+    return {
+        "items": items,
+        "held": any(r.get("queueHeld") is True for r in queued),
+        "can_send_now": active is None and not thread.get("archivedAt") and not thread.get("deletedAt"),
+        "can_steer": steerable and bool(turns_caps.get("supportsActiveSteering")
+                                        or turns_caps.get("supportsSteeringByInterruptRestart")),
+    }
+
+
 def todo_list(items: list[dict], live_run: str | None) -> dict | None:
     """The agent's task list (its to-do tool or plan updates), as the app's
     "Tasks 3/7" banner picks it: the running turn's list, else the latest one. A finished

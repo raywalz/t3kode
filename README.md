@@ -45,6 +45,10 @@ Status: experimental, but in daily use on a Kobo Clara BW.
   current one in bold. It updates as steps finish.
 - **Context usage:** the end of a thread shows how full the agent's context window is
   ("22% of context used (220k of 1m)"), as T3's context meter does.
+- **Queued messages:** while the agent works, a typed reply can wait for the turn to end
+  (Queue) or go into the running turn (Steer). Queued messages show at the end of the
+  thread; tap one to send it now, steer with it, or remove it. After Stop, a paused
+  queue can be resumed.
 - **Pull requests** linked to a thread show at its end with their status: open, draft
   or merged, checks, review, and conflicts.
 - **Model picker:** a thread's Model button switches the model its next turn uses, and

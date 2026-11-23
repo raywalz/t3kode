@@ -998,6 +998,24 @@ local function composeHtml(view, have, anchor, page_break_you, seam)
     if str(view.mode) == "plan" then
         table.insert(parts, '<div class="status">' .. esc(_("Plan mode is on.")) .. "</div>")
     end
+    -- Messages waiting for the running turn to end, like the app's queue above its
+    -- composer. Tap one to send it now / steer with it, or remove it.
+    local queue = type(view.queue) == "table" and view.queue or nil
+    if queue and type(queue.items) == "table" and #queue.items > 0 then
+        local rows = {}
+        for _i, item in ipairs(queue.items) do
+            local text = str(item.text) or ""
+            if #text > 240 then text = text:sub(1, 239):gsub("[\128-\191]*$", ""):gsub("[\192-\255]$", "") .. "…" end
+            table.insert(rows, '<p><a href="t3:queue:' .. esc(str(item.id) or "") .. '">▸ ' .. esc(text) .. "</a></p>")
+        end
+        if queue.held == true then
+            table.insert(rows, '<p><a href="t3:queue:resume"><b>' .. esc(_("Resume queue ›")) .. "</b></a></p>")
+        end
+        local heading = queue.held == true and T(_("Queued (%1) · paused"), #queue.items)
+            or T(_("Queued (%1)"), #queue.items)
+        table.insert(parts, '<div class="prs"><div class="pending-title">' .. esc(heading) .. "</div>"
+            .. table.concat(rows) .. "</div>")
+    end
     local p = view.pending
     if type(p) == "table" then
         local lines = { '<div class="pending"><div class="pending-title">' .. esc(_("Needs you")) .. "</div>" }
@@ -1318,6 +1336,8 @@ function T3:showThread(view, opts)
             if child then return self:openChild(view, child) end
             local image = uri:match("^t3:img:(%w+)$")
             if image then return self:showImage(image) end
+            local queued = uri:match("^t3:queue:(%w+)$")
+            if queued then return self:queuedMessage(view, queued) end
         end,
         -- The title bar's X (or Back) closes the thread.
         close_callback = function()
@@ -1447,6 +1467,44 @@ function T3:sendReply(view, reply_id, quiet)
     end
 end
 
+--- A tapped queued message: what the app's queue row offers. `item` "resume" restarts
+--- a queue paused by Stop.
+function T3:queuedMessage(view, item)
+    local queue = type(view.queue) == "table" and view.queue or {}
+    local function run(busy_text, action, which)
+        local ok, err = withBusy(busy_text, function() return self.api:queueAction(view.id, action, which) end)
+        if not ok then notify(err) end
+        -- A message sent now lands at the end of the thread; after a removal, stay put.
+        self:reloadThread(view.id, action == "remove" and self.viewer and self.viewer:currentPage() or math.huge)
+    end
+    if item == "resume" then
+        return run(_("Resuming…"), "resume")
+    end
+    local text
+    for _i, it in ipairs(type(queue.items) == "table" and queue.items or {}) do
+        if it.id == item then text = str(it.text) end
+    end
+    if not text then return end
+    local dialog
+    local rows = {}
+    local function button(label, busy_text, action)
+        table.insert(rows, {{ text = label, callback = function()
+            UIManager:close(dialog)
+            run(busy_text, action, item)
+        end }})
+    end
+    if queue.can_send_now == true then
+        button(_("Send now"), _("Sending…"), "send")
+    elseif queue.can_steer == true then
+        button(_("Steer: send into the running turn"), _("Sending…"), "steer")
+    end
+    button(_("Remove from queue"), _("Removing…"), "remove")
+    table.insert(rows, {{ text = _("Cancel"), callback = function() UIManager:close(dialog) end }})
+    if #text > 300 then text = text:sub(1, 299):gsub("[\128-\191]*$", ""):gsub("[\192-\255]$", "") .. "…" end
+    dialog = ButtonDialog:new{ title = text, title_align = "left", buttons = rows }
+    UIManager:show(dialog)
+end
+
 function T3:typeReply(view)
     local typed = str(view.typed) or "message"
     local p = type(view.pending) == "table" and view.pending or nil
@@ -1458,23 +1516,29 @@ function T3:typeReply(view)
     if typed == "message" and view.plan_mode == true then
         plan = self:planToggle(str(view.mode) == "plan")
     end
+    local function send(text, deliver)
+        local mode = plan and (plan.on and "plan" or "default") or nil
+        local ok, result = withBusy(deliver == "queue" and _("Queueing…") or _("Sending…"), function()
+            return self.api:reply(view.id, nil, text, self:showProgress(), self:expandList(view.id),
+                mode, deliver)
+        end)
+        if ok then
+            self:showThread(result, { update = true, page = math.huge })
+        else
+            notify(result)
+        end
+    end
+    -- While the agent works, a message waits for the turn to end (Queue, as the app does
+    -- by default), or goes into the running turn (Steer).
+    local working = typed == "message" and str(view.state) == "working"
     self:compose{
         title = str(view.title) or _("Reply"),
         description = question,
         hint = typed == "answer" and _("Your answer") or _("Message"),
-        send_text = _("Send"),
+        send_text = working and _("Queue") or _("Send"),
         extras = { plan and plan.button },
-        on_send = function(text)
-            local mode = plan and (plan.on and "plan" or "default") or nil
-            local ok, result = withBusy(_("Sending…"), function()
-                return self.api:reply(view.id, nil, text, self:showProgress(), self:expandList(view.id), mode)
-            end)
-            if ok then
-                self:showThread(result, { update = true, page = math.huge })
-            else
-                notify(result)
-            end
-        end,
+        alt = working and { text = _("Steer"), on_send = function(text) send(text, "steer") end } or nil,
+        on_send = function(text) send(text, working and "queue" or nil) end,
     }
 end
 
@@ -1650,6 +1714,19 @@ function T3:compose(o)
         { text = _("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
     }
     for _i, b in ipairs(o.extras or {}) do table.insert(row, b) end
+    -- o.alt: a second way to send ({text, on_send}), left of the main one.
+    if o.alt then
+        table.insert(row, {
+            text = o.alt.text,
+            callback = function()
+                local text = dialog:getInputText()
+                if not text:match("%S") then return end
+                dialog._t3_sent = true
+                UIManager:close(dialog)
+                o.alt.on_send(text)
+            end,
+        })
+    end
     table.insert(row, {
         text = o.send_text,
         is_enter_default = true,

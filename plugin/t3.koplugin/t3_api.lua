@@ -229,11 +229,18 @@ function Api:listChangedSince(v, limit)
 end
 
 --- `mode`: "plan" or "default" switches plan mode before sending typed text; nil leaves it.
-function Api:reply(id, reply_id, text, progress, expand, mode)
+--- `deliver`: while a turn runs, "queue" typed text for after it or "steer" the turn with it.
+function Api:reply(id, reply_id, text, progress, expand, mode, deliver)
     return self:requestWithRetry("POST", "/v1/threads/" .. id .. "/reply", nil, {
         reply = reply_id, text = text, client_msg_id = Api.newMessageId(), progress = progress or nil,
-        expand = expand, mode = mode,
+        expand = expand, mode = mode, deliver = deliver,
     })
+end
+
+--- A queued message: "send" it now, "steer" the running turn with it, "remove" it, or
+--- "resume" a paused queue (no `item`). `item`: its id from the view's queue.
+function Api:queueAction(id, action, item)
+    return self:request("POST", "/v1/threads/" .. id .. "/queue", nil, { action = action, item = item })
 end
 
 --- Answer a secret request. Not retried: a retry after a lost reply would be refused as

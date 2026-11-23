@@ -72,6 +72,11 @@ class FakeT3:
             t.update(title=fields["title"])
         elif type_ == "thread.mark-unread":
             t.update(lastVisitedAt="2025-12-31T00:00:00Z")
+        elif type_ in ("queued-run.cancel", "queued-run.start", "queued-message.promote-to-steer"):
+            run = fields.get("runId") or fields.get("queuedRunId")
+            for r in self.projections[tid]["runs"]:
+                if r["id"] == run:
+                    r["status"] = "cancelled" if type_ == "queued-run.cancel" else "running"
         if type_ == "thread.archive":
             del self.threads[tid]  # the shell leaves archived threads out
         else:
@@ -735,6 +740,67 @@ class BridgeTests(unittest.TestCase):
         self.b.refresh()
         self.assertNotEqual(self.b.thread_view(self.s1)["v"], v["v"])
         self.assertIsNone(self.b.thread_view(render.short_id("t2"))["context"])
+
+    def _with_queue(self, active="running", held=False):
+        self.t3.threads["t2"] = dict(self.t3.threads["t2"], activeRunId="r1")
+        self.t3.projections["t2"] = {
+            "thread": {"id": "t2", "activeProviderThreadId": "pt"},
+            "runs": [
+                {"id": "r1", "ordinal": 1, "status": active, "userMessageId": "m1", "activeAttemptId": "a1",
+                 "providerThreadId": "pt"},
+                {"id": "r3", "ordinal": 3, "status": "queued", "queuePosition": 0, "userMessageId": "m3",
+                 "queueHeld": held},
+                {"id": "r2", "ordinal": 2, "status": "queued", "queuePosition": 1, "userMessageId": "m2"},
+                {"id": "r4", "ordinal": 4, "status": "queued", "userMessageId": "m4"},
+            ],
+            "messages": [{"id": "m1", "text": "Go"}, {"id": "m2", "text": "Then this"},
+                         {"id": "m3", "text": "First this"},
+                         {"id": "m4", "text": "Subagent done", "delegatedCompletion": {}}],
+            "providerThreads": [{"id": "pt", "providerSessionId": "s1"}],
+            "providerSessions": [{"id": "s1", "status": "ready",
+                                  "capabilities": {"turns": {"supportsActiveSteering": True}}}],
+            "providerTurns": [{"runAttemptId": "a1", "status": "running"}],
+        }
+        self.b.refresh()
+        return render.short_id("t2")
+
+    def test_queued_messages(self):
+        short = self._with_queue()
+        q = self.b.thread_view(short)["queue"]
+        # In queue order; a subagent's automatic completion message isn't yours to manage.
+        self.assertEqual(q, {"items": [{"id": render.short_id("r3"), "text": "First this"},
+                                       {"id": render.short_id("r2"), "text": "Then this"}],
+                             "held": False, "can_send_now": False, "can_steer": True})
+        with self.assertRaises(BridgeError):  # a turn is running
+            self.b.queue_action(short, "send", q["items"][0]["id"])
+        self.b.settle_delay = 0
+        self.b.queue_action(short, "steer", q["items"][0]["id"])
+        self.assertEqual(self.t3.calls[-1][1][:2], ("queued-message.promote-to-steer", "t2"))
+        self.assertEqual(self.t3.calls[-1][2], {"queuedRunId": "r3", "targetRunId": "r1"})
+        self.b.queue_action(short, "remove", q["items"][1]["id"])
+        self.assertEqual(self.t3.calls[-1][2], {"runId": "r2"})
+        with self.assertRaises(BridgeError):  # gone now
+            self.b.queue_action(short, "remove", q["items"][1]["id"])
+
+    def test_queue_after_stop(self):
+        short = self._with_queue(active="interrupted", held=True)
+        q = self.b.thread_view(short)["queue"]
+        self.assertEqual((q["held"], q["can_send_now"], q["can_steer"]), (True, True, False))
+        self.b.settle_delay = 0
+        self.b.queue_action(short, "send", q["items"][1]["id"])
+        self.assertEqual(self.t3.calls[-1][1][0], "queued-run.start")
+        self.b.queue_action(short, "resume")
+        self.assertEqual(self.t3.calls[-1][1][0], "queue.resume")
+
+    def test_typed_reply_queue_or_steer(self):
+        short = render.short_id("t2")  # working
+        self.b.settle_delay = 0
+        self.b.reply(short, text="later", client_msg_id="q1", deliver="queue")
+        self.assertTrue(self.t3.calls[-1][2]["queue"])
+        self.b.reply(short, text="now", client_msg_id="q2", deliver="steer")
+        self.assertFalse(self.t3.calls[-1][2]["queue"])
+        with self.assertRaises(BridgeError):
+            self.b.reply(short, text="x", client_msg_id="q3", deliver="sideways")
 
     def test_task_list(self):
         steps = lambda *st: [{"id": f"todo-{i}", "text": f"Step {i}", "status": x} for i, x in enumerate(st)]

@@ -99,6 +99,7 @@ def _content_version(body: dict, progress: bool) -> str:
                                   "replies", "typed")}
     shown["prs"] = [(p["number"], p["status"], p["title"]) for p in body["prs"]]
     shown["tasks"] = body["tasks"]
+    shown["queue"] = body["queue"]
     if progress or body["state"] != "working":
         shown["context"] = (body["context"] or {}).get("label")
         shown["entries"] = [(e["role"], e["text"], e.get("expanded")) for e in body["entries"]]
@@ -200,7 +201,7 @@ class Bridge:
         self.wake_keys: dict[str, tuple] = {}
         self.by_short: dict[str, str] = {}  # short id -> long id (threads and projects)
         self.entries: dict[str, tuple] = {}  # long id -> (sig, items, unfolded entries)
-        self.contexts: dict[str, tuple] = {}  # long id -> (sig, context usage)
+        self.snapshots: dict[str, tuple] = {}  # long id -> (sig, context usage, queue)
         # Older pages of threads too big for a whole transcript, fetched as the device
         # pages back: long id -> {"rows": [...] oldest first, "cursor": str, "more": bool}
         self.history: dict[str, dict] = {}
@@ -417,20 +418,21 @@ class Bridge:
             self._store(t["id"], cached[0], _dedupe(h["rows"] + h["tail"]))
         return True
 
-    def _context(self, t: dict) -> dict | None:
-        """The thread's context window usage (render.context_usage), cached until the
-        thread changes. From T3's bounded snapshot, which is quick; None if it fails."""
+    def _snapshot_info(self, t: dict) -> tuple[dict | None, dict | None]:
+        """(context window usage, queued messages) from T3's bounded snapshot, which is
+        quick; cached until the thread changes. (None, None) if it fails."""
         sig = _signature(t)
-        cached = self.contexts.get(t["id"])
+        cached = self.snapshots.get(t["id"])
         if cached and cached[0] == sig:
-            return cached[1]
+            return cached[1], cached[2]
         try:
-            usage = render.context_usage(self.client.thread_bounded(t["id"])["projection"])
+            proj = self.client.thread_bounded(t["id"])["projection"]
+            info = (render.context_usage(proj), render.queue_state(proj))
         except Exception as e:
-            log.warning("context usage: %s", e)
-            usage = None
-        self.contexts[t["id"]] = (sig, usage)
-        return usage
+            log.warning("thread snapshot: %s", e)
+            info = (None, None)
+        self.snapshots[t["id"]] = (sig, *info)
+        return info
 
     def _entries(self, t: dict) -> list[dict]:
         """Every step, unfolded: for suggestions and previews."""
@@ -575,6 +577,7 @@ class Bridge:
                 log.warning("visit failed: %s", e)
 
         pending_view, replies, typed = self._replies(t, state, cursor)
+        context, queue = self._snapshot_info(t)
         parent = self.threads.get((t.get("lineage") or {}).get("parentThreadId") or "")
         body = {
             "id": short, "title": t.get("title") or "Untitled", "state": state,
@@ -583,7 +586,9 @@ class Bridge:
             "plan_mode": self._plan_mode_ok(t.get("modelSelection")),
             "prs": render.pull_requests(t),
             "tasks": render.todo_list(items, live_run),
-            "context": self._context(t),
+            "context": context,
+            "queue": queue and {k: v for k, v in queue.items() if k != "items"} | {
+                "items": [{"id": i["id"], "text": i["text"]} for i in queue["items"]]},
             # For the thread menu (hold the title): the same fields as a list row.
             "settled": _is_settled(t), "pinned": bool(t.get("pinnedAt")),
             "snoozed_until": t["snoozedUntil"] if _snoozed(t) else None,
@@ -855,8 +860,13 @@ class Bridge:
 
     def reply(self, short: str, reply_id: str | None = None, text: str | None = None,
               client_msg_id: str | None = None, progress: bool = False,
-              expand: frozenset[str] = frozenset(), mode: str | None = None) -> dict:
-        """`mode` ("plan" or "default"): for typed text, switch plan mode first."""
+              expand: frozenset[str] = frozenset(), mode: str | None = None,
+              deliver: str | None = None) -> dict:
+        """`mode` ("plan" or "default"): for typed text, switch plan mode first.
+        `deliver`: for typed text while a turn runs, "queue" it for after the turn or
+        "steer" the turn with it (T3 queues it anyway when the turn can't take it)."""
+        if deliver not in (None, "queue", "steer"):
+            raise BridgeError(400, "deliver is `queue` or `steer`")
         self.last_device_at = time.monotonic()
         t = self._thread(short)
 
@@ -865,7 +875,7 @@ class Bridge:
             if reply_id:
                 sent = self._do_reply(t, reply_id, client_msg_id)
             elif text and text.strip():
-                sent = self._do_text(t, text.strip(), client_msg_id, mode)
+                sent = self._do_text(t, text.strip(), client_msg_id, mode, deliver)
             else:
                 raise BridgeError(400, "send `reply` or `text`")
             if sent is not False:  # False: handled here (a tick, a first answer); T3 won't react
@@ -964,7 +974,8 @@ class Bridge:
             return self._answer(t, match, q, label, cmid)
         raise BridgeError(400, "unknown reply")
 
-    def _do_text(self, t: dict, text: str, cmid: str | None, mode: str | None = None) -> None:
+    def _do_text(self, t: dict, text: str, cmid: str | None, mode: str | None = None,
+                 deliver: str | None = None) -> None:
         state = render.thread_state(t)
         if state == "needs_you":
             pending = self._pending(t)
@@ -977,8 +988,8 @@ class Bridge:
                 if q is not None and capability == "live" and q.get("allowCustomAnswer", True) is not False:
                     return self._answer(t, p, q, text, cmid)
         self._set_mode(t, mode, cmid)
-        self.client.send_message(t["id"], text, command_id=_stable_id(cmid, "c"),
-                                 message_id=_stable_id(cmid, "m"))
+        self.client.send_message(t["id"], text, queue=deliver == "queue" and state == "working",
+                                 command_id=_stable_id(cmid, "c"), message_id=_stable_id(cmid, "m"))
 
     def _answer(self, t: dict, p: dict, q: dict, answer, cmid: str | None) -> bool:
         """Record one question's answer (a label, typed text, or a list of labels for a
@@ -1126,6 +1137,57 @@ class Bridge:
             if done(self.threads.get(t["id"])):
                 break
             time.sleep(self.settle_delay)
+        return {"ok": True}
+
+    def queue_action(self, short: str, action: str, item: str | None = None) -> dict:
+        """What the app's queue offers: `send` a queued message now (when no turn runs),
+        `steer` the running turn with it, `remove` it, or `resume` a queue paused by
+        Stop. `item`: the queued message's id from the view. Returns the new view's
+        queue once T3 shows the change (or after a few seconds)."""
+        self.last_device_at = time.monotonic()
+        t = self._thread(short)
+        if action not in ("send", "steer", "remove", "resume"):
+            raise BridgeError(400, "action is send, steer, remove or resume")
+        proj = self.client.thread_bounded(t["id"])["projection"]
+        queue = render.queue_state(proj)
+        if queue is None:
+            raise BridgeError(409, "nothing is queued")
+        run = None
+        if action != "resume":
+            run = next((i["run"] for i in queue["items"] if i["id"] == item), None)
+            if run is None:
+                raise BridgeError(409, "that message isn't queued any more")
+        try:
+            if action == "send":
+                if not queue["can_send_now"]:
+                    raise BridgeError(409, "a turn is running: steer it instead, or wait")
+                self.client.thread_command("queued-run.start", t["id"], runId=run)
+            elif action == "steer":
+                active = render.active_run(proj)
+                if not queue["can_steer"] or active is None:
+                    raise BridgeError(409, "the running turn can't take a message now")
+                self.client.thread_command("queued-message.promote-to-steer", t["id"],
+                                           queuedRunId=run, targetRunId=active["id"])
+            elif action == "remove":
+                self.client.thread_command("queued-run.cancel", t["id"], runId=run)
+            else:
+                self.client.thread_command("queue.resume", t["id"])
+        except T3Error as e:
+            raise BridgeError(502, f"T3 refused: {e}") from None
+
+        def done(q):
+            if action == "resume":
+                return q is None or not q["held"]
+            return q is None or all(i["run"] != run for i in q["items"])
+
+        for _ in range(10):
+            time.sleep(self.settle_delay)
+            try:
+                if done(render.queue_state(self.client.thread_bounded(t["id"])["projection"])):
+                    break
+            except T3Error:
+                pass
+        self.refresh()
         return {"ok": True}
 
     def start_thread(self, project: str, text: str, client_msg_id: str | None = None,

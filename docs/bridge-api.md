@@ -175,6 +175,9 @@ uses it. Returns the new thread view. Choosing the current model changes nothing
   null when T3 has no report: `{used, max, percent, label}`, e.g. label `22% of context
   used (220k of 1m)`; `max` and `percent` are null when the provider doesn't give the
   window size. Mid-turn changes don't count as a change unless `progress` is on.
+- `queue`: messages waiting for the running turn to end, or null:
+  `{items: [{id, text}], held, can_send_now, can_steer}`, oldest first. `held`: Stop
+  paused the queue. See `POST /v1/threads/<id>/queue`.
 - Your message's citations (text you quoted from a reply, with a comment) show as the
   quote in a block quote, then the comment.
 - A subagent thread's view has `parent: {id, title}`; top-level threads have `parent: null`.
@@ -248,6 +251,10 @@ Same body as the thread view, plus `"changed": true|false`.
 With typed text, `mode` (`plan` or `default`) switches plan mode before sending, as
 sending with the app's Plan toggle changed does. Leave it out to keep the thread's mode.
 
+While a turn runs, `deliver` says what typed text does: `queue` waits for the turn to
+end (the app's default), `steer` sends it into the running turn (T3 queues it anyway
+when the turn can't take it). Left out, it steers.
+
 Returns the new thread view. The bridge waits briefly until T3 reacts, so the
 response already shows `working` (and a Stop button) after a send.
 
@@ -261,6 +268,20 @@ choices shows its options as toggles (`kind: "toggle"`, labelled "○ X" / "● 
 plus a `kind: "submit"` Done button with `enabled: false` until something is ticked.
 Ticking is handled by the bridge alone, so it answers instantly. Typed text on such
 a question is added to whatever is ticked.
+
+### `POST /v1/threads/<id>/queue`
+
+```jsonc
+{"action": "steer", "item": "<queued message id>"}
+{"action": "send" | "remove", "item": "..."}
+{"action": "resume"}
+```
+
+What the app's queue offers for the view's `queue` items: `send` a queued message now
+(only when no turn runs, `can_send_now`), `steer` the running turn with it
+(`can_steer`), `remove` it, or `resume` a queue that Stop paused (`held`). Returns
+`{"ok": true}` once T3 shows the change; 409 when the message isn't queued any more
+or the action isn't possible now.
 
 ### `POST /v1/threads/<id>/settle`
 

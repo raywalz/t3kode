@@ -55,6 +55,7 @@ def make_handler(bridge: Bridge, device_token: str):
         ("GET", re.compile(r"^/v1/models$"), "models"),
         ("GET", re.compile(r"^/v1/images/(\w+)$"), "image"),
         ("GET", re.compile(r"^/v1/threads/(\w+)$"), "view"),
+        ("POST", re.compile(r"^/v1/threads/(\w+)/queue$"), "queue"),
         ("GET", re.compile(r"^/v1/threads/(\w+)/wait$"), "wait"),
         ("POST", re.compile(r"^/v1/threads/(\w+)/reply$"), "reply"),
         ("POST", re.compile(r"^/v1/threads/(\w+)/settle$"), "settle"),
@@ -199,7 +200,13 @@ def make_handler(bridge: Bridge, device_token: str):
             return bridge.reply(short, reply_id=b.get("reply"), text=b.get("text"),
                                 client_msg_id=b.get("client_msg_id"), progress=bool(b.get("progress")),
                                 expand=frozenset(x for x in b.get("expand") or [] if isinstance(x, str)),
-                                mode=_mode(b))
+                                mode=_mode(b), deliver=b.get("deliver") or None)
+
+        def r_queue(self, q, short):
+            b = self._body()
+            item = b.get("item")
+            return bridge.queue_action(short, str(b.get("action", "")),
+                                       item=item if isinstance(item, str) else None)
 
         def r_secret(self, q, short):
             b = self._body()
