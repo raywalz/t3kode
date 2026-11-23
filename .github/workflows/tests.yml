@@ -1,0 +1,29 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Bridge tests
+        working-directory: bridge
+        run: python -m unittest discover -s tests
+
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LuaJIT
+        run: sudo apt-get update && sudo apt-get install -y luajit
+      - name: Plugin files parse
+        run: |
+          for f in plugin/t3.koplugin/*.lua; do
+            luajit -e "assert(loadfile('$f'))" && echo "ok $f"
+          done

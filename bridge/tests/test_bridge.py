@@ -1284,5 +1284,57 @@ class HttpTests(unittest.TestCase):
         self.assertEqual((status, body["changed"]), (200, False))
 
 
+class InstallPluginTest(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self.dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.dir.name)
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def test_installs_on_a_kobo_and_keeps_other_settings(self):
+        from t3bridge import install
+        ko = self.root / ".adds" / "koreader"
+        (ko / "plugins" / "t3.koplugin").mkdir(parents=True)
+        (ko / "plugins" / "t3.koplugin" / "_meta.lua").write_text('return { name = "t3" }')
+        (ko / "plugins" / "t3.koplugin" / "stale.lua").write_text("")
+        (ko / "settings").mkdir()
+        (ko / "settings" / "t3.lua").write_text(
+            '-- ./settings/t3.lua\nreturn {\n    ["bridge_url"] = "http://old",\n    ["follow"] = true,\n}\n')
+        dest, settings = install.install(self.root, 'http://10.0.0.2:8787', 'a"b\\c')
+        self.assertEqual(dest, (ko / "plugins" / "t3.koplugin").resolve())
+        self.assertTrue((dest / "main.lua").exists())
+        self.assertFalse((dest / "stale.lua").exists())  # replaced, not merged
+        text = settings.read_text()
+        self.assertIn('["bridge_url"] = "http://10.0.0.2:8787",', text)
+        self.assertIn('["bridge_token"] = "a\\"b\\\\c",', text)
+        self.assertIn('["follow"] = true,', text)
+        self.assertNotIn("http://old", text)
+
+    def test_writes_new_settings_and_refuses_strangers(self):
+        from t3bridge import install
+        (self.root / "plugins").mkdir()  # given KOReader's folder itself
+        _, settings = install.install(self.root, "https://kode.example.com", "")
+        self.assertEqual(settings.read_text(),
+                         'return {\n    ["bridge_token"] = "",\n    ["bridge_url"] = "https://kode.example.com",\n}\n')
+        other = self.root / "plugins" / "t3.koplugin"
+        for f in other.iterdir():
+            f.unlink()
+        (other / "_meta.lua").write_text('return { name = "someone-else" }')
+        with self.assertRaises(install.InstallError):
+            install.install(self.root, "http://x", "")
+        with self.assertRaises(install.InstallError):
+            install.install(self.root / "nowhere", "http://x", "")
+
+    def test_bridge_url_needs_a_reachable_host(self):
+        from t3bridge.install import InstallError, bridge_url
+        self.assertEqual(bridge_url({"BRIDGE_HOST": "100.64.1.2", "BRIDGE_PORT": "8787"}), "http://100.64.1.2:8787")
+        for host in ("127.0.0.1", "0.0.0.0", "localhost"):
+            with self.assertRaises(InstallError):
+                bridge_url({"BRIDGE_HOST": host})
+
+
 if __name__ == "__main__":
     unittest.main()

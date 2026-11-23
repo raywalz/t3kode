@@ -1,9 +1,13 @@
-"""Run the bridge: python3 -m t3bridge [--env PATH]  (from the bridge/ directory)"""
+"""Run the bridge: python3 -m t3bridge [--env PATH]  (from the bridge/ directory)
+
+Or install the plugin onto an e-reader: python3 -m t3bridge install-plugin <drive> (see install.py)
+"""
 
 from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 
 from .config import Config, load_dotenv
@@ -15,7 +19,10 @@ from .token import TokenKeeper
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(prog="t3bridge")
+    if sys.argv[1:2] == ["install-plugin"]:
+        from .install import main as install_main
+        raise SystemExit(install_main(sys.argv[2:]))
+    ap = argparse.ArgumentParser(prog="t3bridge", epilog="Also: t3bridge install-plugin --help")
     ap.add_argument("--env", type=Path, default=Path(__file__).resolve().parents[2] / ".env",
                     help="dotenv file to read (default: .env at the repo root)")
     ap.add_argument("-v", "--verbose", action="store_true")

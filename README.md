@@ -1,5 +1,7 @@
 # T3 KOde
 
+[![tests](https://github.com/raywalz/t3kode/actions/workflows/tests.yml/badge.svg)](https://github.com/raywalz/t3kode/actions/workflows/tests.yml)
+
 **T3 Code for e-readers**
 
 A [KOReader](https://koreader.rocks) plugin (Lua) that talks to [T3 Code](https://github.com/pingdotgg/t3code)
@@ -19,7 +21,9 @@ keyboard is there for everything else.
 <img src="docs/screenshots/approval.png" width="48%" alt="A thread waiting for approval, with Allow, Allow for session and Decline buttons">
 </p>
 
-Status: experimental, but in daily use on a Kobo Clara BW.
+Status: experimental, but in daily use on a Kobo Clara BW. Tested with T3 Code 0.1.12. The
+bridge uses T3's internal API, which can change in any T3 release, so a T3 update may
+break it until the bridge catches up ([notes](docs/t3-api.md)).
 
 ## What it does
 
@@ -149,11 +153,24 @@ public CA and a device clock that's about right.
 
 ### 3. Install the plugin
 
-Over USB, with no typing on the e-reader:
+Connect the e-reader over USB and run:
+
+```sh
+cd bridge && python3 -m t3bridge install-plugin /media/$USER/KOBOeReader   # on a Mac: /Volumes/KOBOeReader
+```
+
+Give it wherever the e-reader is mounted. It finds KOReader's folder, copies the plugin,
+and writes the bridge address and token from your `.env` into the plugin's settings, so
+there's nothing to type on the e-reader. For a tunnel, pass its address with
+`--url https://your.domain`. Then eject the e-reader and restart KOReader.
+
+Or by hand, using the plugin from the repo or `t3.koplugin.zip` from the
+[latest release](https://github.com/raywalz/t3kode/releases/latest):
 
 1. Connect the e-reader and find KOReader's folder on it: `.adds/koreader` on a Kobo
    (`.adds` is hidden; on a Mac, Cmd+Shift+. in the file picker shows it), `koreader`
-   on a Kindle, `applications/koreader` on a PocketBook.
+   on a Kindle, `applications/koreader` on a PocketBook (the Kindle and PocketBook
+   paths are untested; corrections welcome).
 2. Copy `plugin/t3.koplugin` into its `plugins` folder.
 3. Create `settings/t3.lua` in the same KOReader folder:
 
@@ -173,7 +190,8 @@ error if it can't connect yet), and set **Bridge address** and **Bridge token**.
 Then open **T3 KOde**, the first item in the Tools tab. You can also bind it to a
 gesture: the action is "T3 KOde threads".
 
-To update the plugin, copy the new files over it, then choose **Reload T3 plugin** (from
+To update the plugin, run `install-plugin` again or copy the new files over it, then
+choose **Reload T3 plugin** (from
 the list's menu button, or hold an open thread's title). It loads the new code without
 restarting KOReader and reopens what you had open. Gesture action: "Reload T3 plugin".
 
