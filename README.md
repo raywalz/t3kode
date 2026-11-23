@@ -131,9 +131,14 @@ router's DHCP settings so it doesn't change. This is plain HTTP, so anyone on th
 network could read the token: fine at home, not on public Wi-Fi.
 
 **A VPN such as Tailscale.** Works from anywhere. Set `BRIDGE_HOST` to the computer's
-VPN address (Tailscale's start with `100.`). The e-reader needs the VPN too, and there's
-no official Tailscale for e-readers, so getting it on takes some tinkering. Best if
-you already run it.
+VPN address (Tailscale's start with `100.`). The e-reader needs Tailscale too. There's
+no official app for e-readers, but community projects install it:
+[koreader-tailscale](https://github.com/victoria-riley-barnett/koreader-tailscale), a
+KOReader plugin that installs and runs Tailscale from KOReader's menu (Kobo, Kindle and
+others), or [kobo-tailscale](https://github.com/videah/kobo-tailscale), install scripts
+for Kobos. Use Tailscale's kernel (TUN) mode, the default where the device supports it,
+as most Kobos do. In userspace mode, apps reach the tailnet only through a proxy, which
+T3 KOde hasn't been tested with.
 
 **A public HTTPS address.** Works from anywhere, with nothing extra on the e-reader.
 Leave `BRIDGE_HOST=127.0.0.1` and put a tunnel or reverse proxy in front of
