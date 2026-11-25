@@ -505,7 +505,7 @@ function T3:scheduleListPoll()
         self.list_poll = nil
         if not self.list then return end
         -- Don't redraw the list while a thread is open on top of it.
-        if not self.viewer and not self.typing and NetworkMgr:isConnected() then
+        if not self.viewer and not self.typing and not self.pr_list and NetworkMgr:isConnected() then
             pcall(function() self:refreshList(false) end)
         end
         self:scheduleListPoll()
@@ -691,6 +691,10 @@ function T3:showListActions()
             {{ text = _("New thread"), callback = function()
                 UIManager:close(dialog)
                 self:chooseProject()
+            end }},
+            {{ text = _("Pull requests"), callback = function()
+                UIManager:close(dialog)
+                self:showPullRequests()
             end }},
             {{ text = _("Refresh"), callback = function()
                 UIManager:close(dialog)
@@ -1144,10 +1148,12 @@ local function composeHtml(view, have, anchor, page_break_you, seam)
     -- Linked PRs, as T3 last synced them: "PR #12 open · checks pass · needs review".
     -- (T3 checks open PRs every few minutes, so there's no "as of" to show.)
     local prs = {}
-    for _i, pr in ipairs(type(view.prs) == "table" and view.prs or {}) do
+    for i, pr in ipairs(type(view.prs) == "table" and view.prs or {}) do
         local number = type(pr.number) == "number" and tostring(pr.number) or str(pr.number) or "?"
         local line = "<b>#" .. esc(number) .. "</b> " .. esc(str(pr.status) or "")
         if str(pr.title) then line = line .. " · <i>" .. esc(str(pr.title)) .. "</i>" end
+        -- Tap to open it (bridges before PR pages send no project).
+        if str(pr.project) then line = '<a href="t3:pr:' .. i .. '">' .. line .. " ›</a>" end
         table.insert(prs, "<p>" .. line .. "</p>")
     end
     if #prs > 0 then
@@ -1433,6 +1439,166 @@ function T3:showPreview(view, item, old_viewer)
     if old_viewer then UIManager:close(old_viewer) end
 end
 
+-- ---------------------------------------------------------------------------
+-- pull requests (view only)
+
+-- A list row has little room beside the title, so its status is short: "✓ approved".
+local PR_SHORT = {
+    ["open"] = false, ["needs review"] = false, -- what almost every row would say
+    ["checks pass"] = "✓", ["checks fail"] = "✗", ["checks running"] = "…",
+    ["changes requested"] = _("changes"),
+}
+
+local function prStatus(pr)
+    local parts = {}
+    for part in (str(pr.status) or ""):gmatch("[^·]+") do
+        part = part:gsub("^%s+", ""):gsub("%s+$", "")
+        local short = PR_SHORT[part]
+        if short == nil then short = part end
+        if short then table.insert(parts, short) end
+    end
+    return table.concat(parts, " ")
+end
+
+function T3:prListItems(body)
+    local items = {}
+    local mine = body.scope ~= "all"
+    for _i, g in ipairs(type(body.groups) == "table" and body.groups or {}) do
+        local prs = type(g.prs) == "table" and g.prs or {}
+        table.insert(items, { text = (str(g.title) or "") .. "  (" .. #prs .. ")", bold = true })
+        -- "Yours" can mix projects; then each row says which. Everyone's is grouped by project.
+        local projects = {}
+        for _j, pr in ipairs(prs) do projects[str(pr.project_title) or ""] = true end
+        local mixed = mine and next(projects, next(projects)) ~= nil
+        for _j, pr in ipairs(prs) do
+            local number = "#" .. tostring(pr.number or "?")
+            local where = mixed and str(pr.project_title) and (str(pr.project_title) .. " ") or ""
+            local status = prStatus(pr)
+            table.insert(items, {
+                text = "    " .. where .. number .. " · " .. (str(pr.title) or ""),
+                mandatory = (status ~= "" and (status .. "  ") or "") .. ago(pr.updated),
+                dim = pr.draft == true or nil,
+                callback = function() self:showPullRequest(pr) end,
+            })
+        end
+    end
+    if #items == 0 then
+        table.insert(items, { text = mine and _("No open pull requests of yours or waiting for your review.")
+            or _("No open pull requests.") })
+    end
+    if body.truncated == true then
+        table.insert(items, { text = _("Only the latest are shown; see the rest in T3 on the desktop."), dim = true })
+    end
+    local errors = type(body.errors) == "table" and body.errors or {}
+    if #errors > 0 then
+        table.insert(items, {
+            text = T(_("%1 projects couldn't be read ›"), #errors),
+            dim = true,
+            callback = function()
+                local lines = {}
+                for _i, e in ipairs(errors) do
+                    table.insert(lines, (str(e.project) or "?") .. ": " .. (str(e.message) or ""))
+                end
+                UIManager:show(InfoMessage:new{ text = table.concat(lines, "\n\n") })
+            end,
+        })
+    end
+    return items
+end
+
+--- The pull requests screen: yours and those waiting for your review (`scope` "mine"),
+--- or everyone's open ones ("all"), as T3's Pull requests page lists them.
+function T3:showPullRequests(scope)
+    scope = scope or "mine"
+    local ok, body = withBusy(scope == "all" and _("Loading all open pull requests…")
+        or _("Loading pull requests…"), function() return self.api:pullRequests(scope) end)
+    if not ok then
+        notify(body)
+        return
+    end
+    local old = self.pr_list
+    local menu
+    menu = Menu:new{
+        title = scope == "all" and _("All open pull requests") or _("Pull requests"),
+        item_table = self:prListItems(body),
+        is_popout = false,
+        is_borderless = true,
+        covers_fullscreen = true,
+        title_bar_left_icon = "appbar.menu",
+        close_callback = function()
+            UIManager:close(menu)
+            if self.pr_list == menu then self.pr_list = nil end
+        end,
+    }
+    menu.onMenuSelect = function(_menu, item)
+        if item.callback then item.callback() end
+        return true
+    end
+    menu.onLeftButtonTap = function()
+        local dialog
+        dialog = ButtonDialog:new{
+            buttons = {
+                {{ text = scope == "all" and _("Yours and review requests") or _("All open pull requests"),
+                    callback = function()
+                        UIManager:close(dialog)
+                        self:showPullRequests(scope == "all" and "mine" or "all")
+                    end }},
+                {{ text = _("Refresh"), callback = function()
+                    UIManager:close(dialog)
+                    self:showPullRequests(scope)
+                end }},
+            },
+        }
+        UIManager:show(dialog)
+    end
+    Gestures.attach(menu)
+    -- The thread list underneath doesn't redraw while this is open (see scheduleListPoll).
+    self.pr_list = menu
+    UIManager:show(menu)
+    if old then UIManager:close(old) end
+end
+
+--- One pull request: status, checks, description, conversation, commits and files.
+--- `pr`: {project, repo, number, host} from the list or a thread's linked PRs.
+function T3:showPullRequest(pr, old_page)
+    local ok, body = withBusy(_("Loading pull request…"), function() return self.api:pullRequest(pr) end)
+    if not ok then
+        notify(body)
+        return
+    end
+    local page
+    page = ThreadView:new{
+        title = str(body.title) or ("#" .. tostring(pr.number)),
+        html = str(body.html) or "",
+        start_at_bottom = false,
+        start_page = old_page and old_page:currentPage() or nil,
+        refresh = old_page and "ui" or "full",
+        buttons = {{
+            { text = _("Refresh"), callback = function() self:showPullRequest(pr, page) end },
+            { text = _("Close"), callback = function() page:onClose() end },
+        }},
+        link_callback = function(uri)
+            local thread = uri:match("^t3:thread:(%w+)$")
+            if thread then
+                page:onClose()
+                return UIManager:nextTick(function() self:openThread(thread) end)
+            end
+        end,
+        close_callback = function()
+            if self.pr_page == page then -- not when Refresh replaced it
+                self.pr_page = nil
+                self:endTyping(false)
+            end
+        end,
+    }
+    Gestures.attach(page)
+    -- Hold the thread's background redraws while this is open, as the reply box does.
+    self.typing = true
+    self.pr_page = page
+    UIManager:show(page)
+    if old_page then UIManager:close(old_page) end
+end
+
 -- Earlier turns loaded in place. The link at the top of a thread loads more above
 -- it, and the view is then "pinned": refreshes fetch everything from its first
 -- entry on (`after`), so the turns stay and page numbers keep meaning the same place.
@@ -1528,6 +1694,10 @@ function T3:showThread(view, opts)
             if image then return self:showImage(image) end
             local queued = uri:match("^t3:queue:(%w+)$")
             if queued then return self:queuedMessage(view, queued) end
+            local pr = uri:match("^t3:pr:(%d+)$")
+            if pr and type(view.prs) == "table" and view.prs[tonumber(pr)] then
+                return UIManager:nextTick(function() self:showPullRequest(view.prs[tonumber(pr)]) end)
+            end
         end,
         -- The title bar's X (or Back) closes the thread.
         close_callback = function()

@@ -66,6 +66,8 @@ def make_handler(bridge: Bridge, device_token: str, restart=None):
         ("GET", re.compile(r"^/v1/threads/(\w+)/browser$"), "browser"),
         ("GET", re.compile(r"^/v1/threads/(\w+)/browser/snapshot$"), "browser_snapshot"),
         ("GET", re.compile(r"^/v1/threads/(\w+)/device/snapshot$"), "device_snapshot"),
+        ("GET", re.compile(r"^/v1/prs$"), "prs"),
+        ("GET", re.compile(r"^/v1/prs/detail$"), "pr_detail"),
         ("GET", re.compile(r"^/v1/update$"), "update_info"),
         ("POST", re.compile(r"^/v1/update$"), "update"),
         ("GET", re.compile(r"^/v1/plugin$"), "plugin"),
@@ -207,6 +209,16 @@ def make_handler(bridge: Bridge, device_token: str, restart=None):
                 raise BridgeError(400, "send `device`")
             data, ctype = bridge.device_snapshot(short, device, _int(q, "w", 1000, 64, 4000))
             return data, ctype, "no-store"
+
+        def r_prs(self, q):
+            return bridge.pull_request_list(q.get("scope", ["mine"])[0])
+
+        def r_pr_detail(self, q):
+            project, repo = q.get("project", [""])[0], q.get("repo", [""])[0]
+            number = _int(q, "number")
+            if not project or not repo or not number:
+                raise BridgeError(400, "send `project`, `repo` and `number`")
+            return bridge.pull_request_detail(project, repo, number, q.get("host", [None])[0] or None)
 
         def r_projects(self, q):
             return bridge.projects()

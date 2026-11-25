@@ -244,6 +244,32 @@ outside the workspace did ask (with `reason: "Path is outside allowed working di
   T3 doesn't check which thread has the device open, so the bridge does.
 - The `device_*` MCP tools are only for agents T3 starts; a session token can't call them.
 
+### Pull requests
+
+All need only `orchestration:read`. A `PullRequestRef` is `{projectId, host?, repository,
+number}`. The contracts are in `packages/contracts/src/pullRequest.ts`.
+
+- `pullRequests.list` `{state: "open"|"closed"|"merged"|"all", involvement?: "all"|"authored"|"reviewing", limit?, query?, filters?, projectId?}`
+  → `{viewers, providers, entries: [PullRequestListEntry], errors: [{projectId, projectTitle, message}], truncated, nextCursors}`.
+  It reads every project's repository from the host (through T3's GitHub token or CLI):
+  `authored` or `reviewing` take 1–4 s; `all` across several busy repositories 8–30 s
+  (`limit` is per repository). Entries carry `state`, `isDraft`, `checksState`,
+  `reviewDecision`, `mergeability`, `updatedAt` and `author`. A host T3 can't read at all
+  fails with `PullRequestUnavailableError` (`reason`, `requirement`).
+- `pullRequests.detail` `PullRequestRef` → `PullRequestDetail`: `title`, `body` (markdown),
+  `state`, `isDraft`, `mergeability`, `additions`, `deletions`, `changedFiles`, branches,
+  dates, `checks: [{name, status, description}]`, `baseComparison`/`behindBy`. No review
+  decision.
+- `pullRequests.activity` `PullRequestRef` → `{comments: [{kind ("issue-comment", "review",
+  "review-comment"), author, body, createdAt, reviewState, path}], commentCount,
+  commentsTruncated, reviewThreads: [{path, line, isResolved, isOutdated, comments}], commits}`.
+- `pullRequests.changeBreakdown` → line counts split into code, tests, mocks, generated
+  and docs, or null. `pullRequests.linkedThreads` → `{threads: [{id, projectId, title, archivedAt}]}`.
+- The diff is HTTP only: `POST /api/pull-requests/diff` with a `PullRequestRef` →
+  `{patch, truncated, nextCursor}` (unified diff; GitHub pages past 300 files).
+- Everything else (`comment`, `submitReview`, `runAction`, labels, reviewers, …) changes
+  the PR and needs `orchestration:operate`; the bridge doesn't use it.
+
 ## Change notifications (not used yet)
 
 `orchestration.subscribeShell` (`{afterSequence?}`) and

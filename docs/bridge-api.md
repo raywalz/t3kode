@@ -176,9 +176,11 @@ uses it. Returns the new thread view. Choosing the current model changes nothing
 - `settled`, `pinned`, `snoozed_until` and `can_mark_unread`: as in a list row, for the
   thread menu (hold the title).
 - `prs`: the thread's linked pull requests, open ones first, as T3 last read them (it
-  checks open ones every few minutes): `{number, repo, url, title, open, status}`, where
+  checks open ones every few minutes): `{number, repo, host, project, url, title, open,
+  status}`, where
   `status` sums one up like the app's PR row: `open · checks pass · needs review ·
   conflicts`, `draft`, `merged`, `closed`, or `not synced` when T3 hasn't read it yet.
+  `project`, `repo`, `number` and `host` open its page (`GET /v1/prs/detail`).
 - `tasks`: the agent's task list (its to-do tool or plan updates), like the
   app's "Tasks 3/7" banner, or null: `{done, total, live, steps: [{text, status}]}` with
   `status` `pending`, `running` or `completed`. It's the running turn's list (`live`), else
@@ -380,6 +382,38 @@ What a simulator or emulator open in the thread shows right now, as for a tab (g
 PNG with ImageMagick, else T3's PNG), with `cache-control: no-store`. Nothing is sent to
 the device. Errors: 404 if the device isn't open in this thread, 503 if T3's device hub
 isn't running, 502 if T3 can't list devices or take the screenshot.
+
+### `GET /v1/prs?scope=mine|all`
+
+Open pull requests in the projects' repositories, as T3's Pull requests page lists them
+(T3 asks the host, so this takes a few seconds, and everyone's can take 10–30 s).
+`mine` (the default): `Review requested`, then `Yours`; `all`: everyone's, grouped by
+project, the project with the latest activity first. Within a group, the latest updated
+first.
+
+```json
+{"scope": "mine", "truncated": false,
+ "groups": [{"title": "Yours", "prs": [{"project": "ab12cd34", "project_title": "app",
+   "repo": "me/app", "host": "github.com", "number": 12, "title": "Fix the thing",
+   "status": "open · checks pass · needs review", "draft": false, "author": "me",
+   "updated": "2026-01-02T00:00:00Z"}]}],
+ "errors": [{"project": "notes", "message": "me/notes could not be read. …"}]}
+```
+
+Empty groups are left out. `errors`: projects whose repository T3 couldn't read.
+`truncated`: there are more than T3 listed. 502 with T3's reason when it can't list any
+(for example, no credentials for the host).
+
+### `GET /v1/prs/detail?project=<id>&repo=<owner/name>&number=<n>&host=<host>`
+
+One pull request's page, from a list row or a thread's `prs`: `{title, number, repo, url,
+status, html}`. `title` is `#12 me/app`; `status` as in a list row, its review part
+worked out from the reviews. `html` holds the title, status, author and dates, branches,
+size, then sections for linked threads (`t3:thread:<id>` links), checks (failures first),
+reviewers, description, conversation (bots' comments one line each), review comments
+(resolved and outdated ones one line each), commits, and changed files. `host` is
+optional. 404 for an unknown project, 502 if T3 can't read the PR. If the comments,
+diff or linked threads can't be read, the page leaves those sections out.
 
 ### `POST /v1/update`
 

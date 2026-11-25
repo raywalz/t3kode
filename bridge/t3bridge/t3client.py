@@ -341,6 +341,33 @@ class T3Client:
         finally:
             ws.close()
 
+    # ---- pull requests (all need only orchestration:read) ----------------------
+
+    def pull_requests(self, state: str = "open", involvement: str = "all", limit: int = 100) -> dict:
+        """Open (or closed, merged, all) PRs across the projects' repositories:
+        {viewers, providers, entries: [PullRequestListEntry], errors, truncated, nextCursors}."""
+        return self.rpc("pullRequests.list", {"state": state, "involvement": involvement, "limit": limit})
+
+    def pull_request(self, ref: dict) -> dict:
+        """PullRequestDetail for `ref` ({projectId, host?, repository, number})."""
+        return self.rpc("pullRequests.detail", ref)
+
+    def pull_request_activity(self, ref: dict) -> dict:
+        """Comments, reviews, review threads and commits."""
+        return self.rpc("pullRequests.activity", ref)
+
+    def pull_request_breakdown(self, ref: dict) -> dict | None:
+        """Line counts split into code, tests, docs, mocks, generated (null if unknown)."""
+        return self.rpc("pullRequests.changeBreakdown", ref)
+
+    def pull_request_threads(self, ref: dict) -> list[dict]:
+        """T3 threads linked to the PR: [{id, projectId, title, archivedAt}]."""
+        return (self.rpc("pullRequests.linkedThreads", ref) or {}).get("threads") or []
+
+    def pull_request_diff(self, ref: dict) -> dict:
+        """The first slice of the unified diff: {patch, truncated, nextCursor}. HTTP only."""
+        return self._http("POST", "/api/pull-requests/diff", body=ref)
+
     def devices(self) -> dict:
         """Every simulator and emulator T3 knows: `devices` (DeviceSummary objects) and
         `sessions` ({threadId, hostId, deviceId, platform}), which say which thread has

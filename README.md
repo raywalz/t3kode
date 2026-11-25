@@ -62,7 +62,10 @@ break it until the bridge catches up ([notes](docs/t3-api.md)).
   thread; tap one to send it now, steer with it, or remove it. After Stop, a paused
   queue can be resumed.
 - **Pull requests** linked to a thread show at its end with their status: open, draft
-  or merged, checks, review, and conflicts.
+  or merged, checks, review, and conflicts. Tap one to read it: its checks, description,
+  conversation, review comments, commits and changed files, and the threads linked to it.
+  The list's menu has **Pull requests**: yours and those waiting for your review, or
+  everyone's open ones, as T3's Pull requests page lists them. View only.
 - **Model picker:** a thread's Model button switches the model its next turn uses, and
   a new thread can start on any model. Your T3 favorites come first, then More models…
   for the rest (minus the ones you've hidden in T3).

@@ -17,9 +17,10 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from . import render
+from . import prs, render
 from .images import Images
-from .t3client import PREVIEW_HOST_SETUP, PREVIEW_TAB_GONE, T3Error, T3SocketError, pending_requests_from
+from .t3client import (PREVIEW_HOST_SETUP, PREVIEW_TAB_GONE, T3Error, T3RpcError, T3SocketError,
+                       pending_requests_from)
 
 log = logging.getLogger("t3bridge")
 
@@ -1387,6 +1388,86 @@ class Bridge:
             })
         return {"tabs": tabs, "devices": self._thread_devices(t["id"])}
 
+    # ---- pull requests ------------------------------------------------------
+
+    def pull_request_list(self, scope: str = "mine") -> dict:
+        """Open PRs in the projects' repositories. `mine`: the app's first two groups,
+        review requested and yours; `all`: everyone's, grouped by project."""
+        self.last_device_at = time.monotonic()
+
+        def fetch(involvement: str) -> dict:
+            try:
+                # Everyone's PRs take T3 a while to gather, so fewer per repository.
+                return self.client.pull_requests("open", involvement, 40 if involvement == "all" else 100)
+            except (T3Error, OSError) as e:
+                raise BridgeError(502, _t3_message(e)) from None
+
+        def rows(entries: list[dict]) -> list[dict]:
+            entries = sorted(entries, key=lambda e: e.get("updatedAt") or "", reverse=True)
+            return [prs.row(e, render.short_id(e["projectId"])) for e in entries]
+
+        groups: list[dict] = []
+        if scope == "all":
+            result = fetch("all")
+            by_project: dict[str, list[dict]] = {}
+            for e in result.get("entries") or []:
+                by_project.setdefault(e.get("projectTitle") or "", []).append(e)
+            # Projects with the latest activity first.
+            for title, entries in sorted(by_project.items(), key=lambda kv: max(
+                    e.get("updatedAt") or "" for e in kv[1]), reverse=True):
+                groups.append({"title": title, "prs": rows(entries)})
+            errors, truncated = result.get("errors") or [], bool(result.get("truncated"))
+        else:
+            mine, review = fetch("authored"), fetch("reviewing")
+            seen = {(e["projectId"], e["number"]) for e in review.get("entries") or []}
+            groups.append({"title": "Review requested", "prs": rows(review.get("entries") or [])})
+            groups.append({"title": "Yours", "prs": rows(
+                [e for e in mine.get("entries") or [] if (e["projectId"], e["number"]) not in seen])})
+            errors = {e.get("projectId"): e for e in (mine.get("errors") or []) + (review.get("errors") or [])}
+            errors = list(errors.values())
+            truncated = bool(mine.get("truncated") or review.get("truncated"))
+        return {
+            "scope": "all" if scope == "all" else "mine",
+            "groups": [g for g in groups if g["prs"]],
+            "errors": [{"project": e.get("projectTitle"), "message": e.get("message")} for e in errors],
+            "truncated": truncated,
+        }
+
+    def pull_request_detail(self, project: str, repo: str, number: int, host: str | None = None) -> dict:
+        """One PR's page: status, checks, description, conversation, commits and files."""
+        self.last_device_at = time.monotonic()
+        pid = self.by_short.get(project)
+        if not pid or not any(p["id"] == pid for p in (self.shell or {}).get("projects") or []):
+            raise BridgeError(404, "no such project")
+        ref = {"projectId": pid, "repository": repo, "number": number}
+        if host:
+            ref["host"] = host
+        try:
+            detail = self.client.pull_request(ref)
+        except (T3Error, OSError) as e:
+            raise BridgeError(502, _t3_message(e)) from None
+
+        def extra(name: str, fn):
+            try:
+                return fn(ref)
+            except (T3Error, OSError) as e:  # the page still shows without it
+                log.info("no PR %s for %s#%s: %s", name, repo, number, e)
+                return None
+
+        activity = extra("activity", self.client.pull_request_activity)
+        breakdown = extra("breakdown", self.client.pull_request_breakdown)
+        diff = extra("diff", self.client.pull_request_diff)
+        linked = extra("threads", self.client.pull_request_threads) or []
+        threads = [{"id": render.short_id(t["id"]), "title": self.threads[t["id"]].get("title")}
+                   for t in linked if t.get("id") in self.threads and not t.get("archivedAt")]
+        files = prs.diff_files(diff.get("patch") or "") if isinstance(diff, dict) else None
+        return {
+            "title": f"#{detail.get('number')} {detail.get('repository')}",
+            "number": detail.get("number"), "repo": detail.get("repository"), "url": detail.get("url"),
+            "status": prs.detail_status(detail, activity),
+            "html": prs.detail_html(detail, activity, files, breakdown, threads),
+        }
+
     def _thread_devices(self, thread_id: str, strict: bool = False) -> list[dict]:
         """Simulators and emulators open in the thread. T3 can screenshot any device on
         its machine, so only these are shown. A server without devices lists none."""
@@ -1454,6 +1535,31 @@ class Bridge:
         except (T3Error, OSError) as e:
             raise BridgeError(502, f"T3's browser stream failed: {e}") from None
         return self.images.page_snapshot(jpeg, width)
+
+
+_PR_UNAVAILABLE = {
+    "cli-missing": "T3 can't read pull requests: the tool it reads this host with isn't set up.",
+    "cli-unauthenticated": "T3 can't read pull requests: this host has no working credentials.",
+    "provider-unsupported": "T3 can't browse pull requests for this project's host yet.",
+}
+
+
+def _t3_message(e: Exception) -> str:
+    """What a failed T3 call says, in its own words where it has some."""
+    if isinstance(e, T3RpcError):
+        stack = [e.exit]
+        while stack:
+            v = stack.pop()
+            if isinstance(v, dict):
+                if str(v.get("_tag", "")).endswith("Error"):
+                    text = v.get("requirement") or v.get("detail") or v.get("message")
+                    text = text or _PR_UNAVAILABLE.get(v.get("reason") or "")
+                    if text:
+                        return str(text)
+                stack.extend(v.values())
+            elif isinstance(v, list):
+                stack.extend(v)
+    return str(e)
 
 
 def _model_id(instance: str, slug: str) -> str:

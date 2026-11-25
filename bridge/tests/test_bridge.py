@@ -9,11 +9,11 @@ import unittest
 import urllib.error
 import urllib.request
 
-from t3bridge import render
+from t3bridge import prs, render
 from t3bridge.core import Bridge, BridgeError
 from t3bridge.server import serve
 from t3bridge.suggest import parse_suggestions
-from t3bridge.t3client import T3Error
+from t3bridge.t3client import T3Error, T3RpcError
 
 
 def item(o, type_, **kw):
@@ -1052,6 +1052,171 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.t3.calls[-1][2], {"regenerateTitle": True})
 
 
+def pr_entry(pid, number, **kw):
+    return {"provider": "github", "host": "github.com", "projectId": pid, "projectTitle": {"p1": "Alpha", "p2": "Beta"}[pid],
+            "repository": "me/app", "number": number, "title": f"PR {number}", "url": f"https://github.com/me/app/pull/{number}",
+            "author": {"login": "me", "name": None, "avatarUrl": None}, "headBranch": "b", "baseBranch": "main",
+            "state": "open", "isDraft": False, "mergeability": "mergeable", "additions": 0, "deletions": 0,
+            "createdAt": "2026-01-01T00:00:00Z", "updatedAt": f"2026-01-0{number}T00:00:00Z",
+            "viewerReviewRequested": False, "labels": [], **kw}
+
+
+PATCH = """diff --git a/src/a.py b/src/a.py
+index 1..2 100644
+--- a/src/a.py
++++ b/src/a.py
+@@ -1,3 +1,4 @@
+ keep
+-old
++new
++more
+diff --git a/old.txt b/new.txt
+similarity index 90%
+rename from old.txt
+rename to new.txt
+@@ -1 +1 @@
+-x
++y
+"""
+
+
+class PullRequestTests(unittest.TestCase):
+    def setUp(self):
+        self.t3 = FakeT3()
+        self.t3.threads["t1"] = thread("t1")
+        self.lists = {
+            "authored": {"entries": [pr_entry("p1", 1), pr_entry("p2", 3, isDraft=True), pr_entry("p1", 2)],
+                         "errors": [{"projectId": "p2", "projectTitle": "Beta", "message": "can't read"}],
+                         "truncated": False},
+            "reviewing": {"entries": [pr_entry("p1", 2, checksState="failing", reviewDecision="review-required")],
+                          "errors": [{"projectId": "p2", "projectTitle": "Beta", "message": "can't read"}],
+                          "truncated": False},
+            "all": {"entries": [pr_entry("p1", 1), pr_entry("p2", 4)], "errors": [], "truncated": True},
+        }
+        self.t3.pull_requests = lambda state, involvement, limit: self.lists[involvement]
+        self.refs = []
+        self.detail = {
+            "projectId": "p1", "repository": "me/app", "number": 2, "title": "Fix <it>", "body": "Does **this**.",
+            "url": "https://github.com/me/app/pull/2", "author": {"login": "me"}, "state": "open", "isDraft": False,
+            "mergeability": "conflicting", "additions": 3, "deletions": 2, "changedFiles": 2,
+            "headBranch": "fix", "baseBranch": "main", "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-02T00:00:00Z", "mergedAt": None, "closedAt": None, "reviewers": [], "labels": [],
+            "checks": [{"name": "lint", "status": "success", "description": None, "url": None},
+                       {"name": "tests", "status": "failure", "description": "2 failed", "url": None}],
+            "baseComparison": "behind", "behindBy": 2}
+
+        def detail(ref):
+            self.refs.append(ref)
+            if getattr(self, "error", None):
+                raise self.error
+            return self.detail
+        self.t3.pull_request = detail
+        self.t3.pull_request_activity = lambda ref: {
+            "comments": [
+                {"id": "c2", "kind": "review", "author": {"login": "rev"}, "body": "Needs work",
+                 "createdAt": "2026-01-02T00:00:00Z", "url": None, "path": None, "reviewState": "CHANGES_REQUESTED"},
+                {"id": "c1", "kind": "issue-comment", "author": {"login": "ci-bot", "isBot": True},
+                 "body": "### :white_check_mark: **All good**\n\nlong table", "createdAt": "2026-01-01T00:00:00Z",
+                 "url": None, "path": None, "reviewState": None}],
+            "commentCount": 2, "commentsTruncated": False,
+            "reviewThreads": [
+                {"id": "r1", "path": "src/a.py", "line": 3, "side": "right", "isResolved": False, "isOutdated": False,
+                 "comments": [{"id": "x", "author": {"login": "rev"}, "body": "Why?", "createdAt": "2026-01-02T00:00:00Z", "url": None}]},
+                {"id": "r2", "path": "b.py", "line": None, "side": "right", "isResolved": True, "isOutdated": False,
+                 "comments": [], "commentCount": 4}],
+            "commits": [{"oid": "abcdef123", "messageHeadline": "Fix it", "committedDate": "2026-01-01T00:00:00Z"}]}
+        self.t3.pull_request_breakdown = lambda ref: None
+        self.t3.pull_request_diff = lambda ref: {"patch": PATCH, "truncated": False, "nextCursor": None}
+        self.t3.pull_request_threads = lambda ref: [{"id": "t1", "projectId": "p1", "title": "x", "archivedAt": None},
+                                                    {"id": "gone", "projectId": "p1", "title": "y", "archivedAt": None}]
+        self.b = Bridge(self.t3, None)
+        self.b.refresh()
+        self.p1 = render.short_id("p1")
+
+    def test_status_line(self):
+        self.assertEqual(prs.status({"state": "open", "isDraft": True, "checksState": "passing"}), "draft · checks pass")
+        self.assertEqual(prs.status({"state": "merged", "checksState": "failing"}), "merged")
+        self.assertEqual(prs.status({}), "not synced")
+        self.assertEqual(prs.checks_state([{"status": "success"}, {"status": "pending"}]), "pending")
+        self.assertIsNone(prs.checks_state([]))
+
+    def test_diff_files(self):
+        self.assertEqual(prs.diff_files(PATCH), [
+            {"path": "src/a.py", "additions": 2, "deletions": 1},
+            {"path": "new.txt", "additions": 1, "deletions": 1, "from": "old.txt"}])
+
+    def test_mine_groups_review_requests_first(self):
+        out = self.b.pull_request_list("mine")
+        self.assertEqual([(g["title"], [p["number"] for p in g["prs"]]) for g in out["groups"]],
+                         [("Review requested", [2]), ("Yours", [3, 1])])  # newest first, no repeats
+        row = out["groups"][0]["prs"][0]
+        self.assertEqual((row["project"], row["repo"], row["status"]), (self.p1, "me/app", "open · checks fail · needs review"))
+        self.assertTrue(out["groups"][1]["prs"][0]["draft"])
+        self.assertEqual(out["errors"], [{"project": "Beta", "message": "can't read"}])  # once, not per call
+
+    def test_all_groups_by_project(self):
+        out = self.b.pull_request_list("all")
+        self.assertEqual([g["title"] for g in out["groups"]], ["Beta", "Alpha"])
+        self.assertTrue(out["truncated"])
+
+    def test_list_error_says_why(self):
+        def fail(*a):
+            raise T3RpcError("pullRequests.list", {"_tag": "Failure", "cause": [{"_tag": "Fail", "error": {
+                "_tag": "PullRequestUnavailableError", "reason": "cli-unauthenticated"}}]})
+        self.t3.pull_requests = fail
+        with self.assertRaises(BridgeError) as cm:
+            self.b.pull_request_list()
+        self.assertIn("no working credentials", str(cm.exception))
+
+    def test_detail_page(self):
+        d = self.b.pull_request_detail(self.p1, "me/app", 2, "github.com")
+        self.assertEqual(self.refs[-1], {"projectId": "p1", "repository": "me/app", "number": 2, "host": "github.com"})
+        self.assertEqual(d["title"], "#2 me/app")
+        self.assertEqual(d["status"], "open · checks fail · changes requested · conflicts")
+        h = d["html"]
+        self.assertIn("Fix &lt;it&gt;", h)
+        self.assertIn("fix → main (2 behind)", h)
+        self.assertLess(h.index("✗ tests"), h.index("✓ lint"))  # failures first
+        self.assertIn("Checks (1/2 passed)", h)
+        self.assertIn("<b>this</b>", h)
+        self.assertIn("ci-bot (bot)</b> · ", h)
+        self.assertIn("All good", h)
+        self.assertNotIn("long table", h)  # bots get one line
+        self.assertLess(h.index("ci-bot"), h.index("Needs work"))  # oldest first
+        self.assertIn("src/a.py:3", h)
+        self.assertIn("b.py</b> (resolved) · 4 comments", h)
+        self.assertIn("<code>abcdef1</code> Fix it", h)
+        self.assertIn("old.txt → new.txt", h)
+        self.assertIn(f'href="t3:thread:{render.short_id("t1")}"', h)
+        self.assertNotIn(render.short_id("gone"), h)  # only threads the bridge knows
+
+    def test_detail_without_extras(self):
+        def fail(ref):
+            raise T3Error("nope")
+        self.t3.pull_request_activity = self.t3.pull_request_diff = self.t3.pull_request_threads = fail
+        d = self.b.pull_request_detail(self.p1, "me/app", 2)
+        self.assertNotIn("host", self.refs[-1])
+        self.assertIn("Description", d["html"])
+        self.assertNotIn("Conversation", d["html"])
+
+    def test_detail_errors(self):
+        with self.assertRaises(BridgeError) as cm:
+            self.b.pull_request_detail(render.short_id("t1"), "me/app", 2)  # a thread, not a project
+        self.assertEqual(cm.exception.status, 404)
+        self.error = T3Error("gone")
+        with self.assertRaises(BridgeError) as cm:
+            self.b.pull_request_detail(self.p1, "me/app", 2)
+        self.assertEqual(cm.exception.status, 502)
+
+    def test_thread_view_prs_open_their_page(self):
+        self.t3.threads["t1"] = dict(self.t3.threads["t1"], pullRequests=[
+            {"number": 2, "repository": "me/app", "host": "github.com", "url": "u", "snapshot": {"state": "open"}}])
+        self.b.refresh()
+        pr = self.b.thread_view(render.short_id("t1"))["prs"][0]
+        self.assertEqual((pr["project"], pr["host"]), (self.p1, "github.com"))
+        self.b.pull_request_detail(pr["project"], pr["repo"], pr["number"], pr["host"])
+
+
 class TokenTests(unittest.TestCase):
     class Client:
         def __init__(self, days_left, valid=("old", "new")):
@@ -1394,6 +1559,12 @@ class HttpTests(unittest.TestCase):
         status, body = self.req(f"/v1/threads/{sid}/wait?v={view['v']}&timeout=0")
         self.assertEqual(body["v"], view["v"])
         self.assertEqual((status, body["changed"]), (200, False))
+
+    def test_pull_request_routes(self):
+        self.t3.pull_requests = lambda state, involvement, limit: {"entries": [], "errors": [], "truncated": False}
+        self.assertEqual(self.req("/v1/prs?scope=all"), (200, {"scope": "all", "groups": [], "errors": [], "truncated": False}))
+        self.assertEqual(self.req("/v1/prs/detail?project=x")[0], 400)
+        self.assertEqual(self.req("/v1/prs/detail?project=x&repo=me/app&number=2")[0], 404)
 
 
 class InstallPluginTest(unittest.TestCase):

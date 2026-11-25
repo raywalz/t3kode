@@ -296,4 +296,18 @@ function Api:deviceSnapshot(id, device_id, width, filepath)
     return self:download("/v1/threads/" .. id .. "/device/snapshot", { device = device_id, w = width }, filepath)
 end
 
+--- Open pull requests, grouped: `scope` "mine" (yours and review requests) or "all".
+--- T3 asks the host for them, which can take a while for everyone's, so the bridge
+--- may say nothing for most of a minute.
+function Api:pullRequests(scope)
+    return self:request("GET", "/v1/prs", { scope = scope }, nil, { 60, 90 })
+end
+
+--- One pull request's page, `pr` being {project, repo, number, host} from a list or thread:
+--- { title, number, repo, url, status, html }.
+function Api:pullRequest(pr)
+    return self:request("GET", "/v1/prs/detail",
+        { project = pr.project, repo = pr.repo, number = pr.number, host = pr.host }, nil, { 60, 90 })
+end
+
 return Api
