@@ -208,6 +208,7 @@ class Bridge:
         self.client = client
         self.updater = updater  # update.Updater: release checks and self-updates
         self.suggester = suggester
+        self.voice = None  # voice.Voice when voice replies are on
         self.token_keeper = token_keeper
         self.images = images or Images(client)
         self.poll_fast = poll_fast
@@ -521,7 +522,8 @@ class Bridge:
             out.insert(0, {"id": None, "title": "Pinned", "pinned": True, "updated": None,
                            "active_updated": None, "total": len(pinned), "settled": 0, "snoozed": 0,
                            "more": 0, "threads": [self._thread_row(t, now) for t in pinned]})
-        body = {"v": self.list_v, "projects": out}
+        # "Call me" can start a new thread (POST /v1/projects/<id>/call).
+        body = {"v": self.list_v, "projects": out, "call": self.voice is not None}
         notice = self.token_keeper.notice() if self.token_keeper else None
         if notice:
             body["notice"] = notice
@@ -552,7 +554,8 @@ class Bridge:
     def projects(self) -> dict:
         shell = self.shell or {"projects": []}
         return {"projects": [{"id": render.short_id(p["id"]), "title": p.get("title")}
-                             for p in shell["projects"] if not p.get("archivedAt")]}
+                             for p in shell["projects"] if not p.get("archivedAt")],
+                "call": self.voice is not None}
 
     # ---- thread view --------------------------------------------------------
 
@@ -627,6 +630,8 @@ class Bridge:
                        if parent and _is_subagent(t) else None),
             "cursor": cursor, "more_before": more_before, "entries": shown,
             "pending": pending_view, "replies": replies, "typed": typed,
+            # Offer "Call me" (a spoken reply by phone): anywhere typing is.
+            "call": self.voice is not None and typed != "none",
             # Images in the shown entries, for the device to fetch from /v1/images/<id>.
             "images": list(dict.fromkeys(
                 i for e in shown for i in re.findall(r'src="t3img:(\w+)"', e.get("html", "")))),

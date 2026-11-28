@@ -23,6 +23,18 @@ def load_dotenv(path: Path) -> None:
         os.environ.setdefault(key.strip(), value)
 
 
+# Environment variable -> Config field, for voice replies.
+VOICE_REQUIRED = {
+    "TWILIO_ACCOUNT_SID": "twilio_account_sid",
+    "TWILIO_API_KEY": "twilio_api_key",
+    "TWILIO_API_SECRET": "twilio_api_secret",
+    "TWILIO_NUMBER": "twilio_number",
+    "VOICE_MY_NUMBER": "voice_my_number",
+    "VOICE_PUBLIC_URL": "voice_public_url",
+    "VOICE_WEBHOOK_SECRET": "voice_webhook_secret",
+}
+
+
 @dataclass(frozen=True)
 class Config:
     t3_url: str
@@ -47,6 +59,22 @@ class Config:
     t3_token_command: str = ""
     # Look for new T3 KOde releases on the checkout's git remote about once a day.
     update_check: bool = True
+    # Voice replies by phone call through Twilio (see voice.py). On when all of the
+    # VOICE_REQUIRED values are set.
+    twilio_account_sid: str = ""
+    twilio_api_key: str = ""
+    twilio_api_secret: str = ""
+    twilio_number: str = ""
+    voice_my_number: str = ""
+    voice_public_url: str = ""
+    voice_webhook_secret: str = ""
+    voice_port: int = 8791
+    voice_speech_model: str = "deepgram_nova-3"
+    voice_language: str = "en-US"
+
+    @property
+    def voice_enabled(self) -> bool:
+        return all(getattr(self, f) for f in VOICE_REQUIRED.values())
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -69,6 +97,10 @@ class Config:
             poll_slow=float(env.get("POLL_SLOW", "20")),
             t3_token_command=env.get("T3_TOKEN_COMMAND", ""),
             update_check=env.get("UPDATE_CHECK", "1").strip().lower() not in ("0", "false", "off", "no"),
+            voice_port=int(env.get("VOICE_PORT", "8791")),
+            voice_speech_model=env.get("VOICE_SPEECH_MODEL", "") or "deepgram_nova-3",
+            voice_language=env.get("VOICE_LANGUAGE", "") or "en-US",
+            **{field: env.get(name, "").strip() for name, field in VOICE_REQUIRED.items()},
         )
         if not cfg.device_token and not cfg.listens_on_loopback_only:
             raise SystemExit(
@@ -76,7 +108,23 @@ class Config:
             )
         if cfg.suggest_url and not cfg.suggest_model:
             raise SystemExit("SUGGEST_URL is set but SUGGEST_MODEL is not.")
+        cfg.check_voice()
         return cfg
+
+    def check_voice(self) -> None:
+        missing = [name for name, field in VOICE_REQUIRED.items() if not getattr(self, field)]
+        if len(missing) == len(VOICE_REQUIRED):
+            return  # voice replies are off
+        if missing:
+            raise SystemExit(f"Voice replies need {', '.join(missing)} too (or leave all of "
+                             f"{', '.join(VOICE_REQUIRED)} empty). See .env.example.")
+        if not self.voice_public_url.startswith("https://"):
+            raise SystemExit("VOICE_PUBLIC_URL must be an https:// URL that Twilio can reach.")
+        for name in ("TWILIO_NUMBER", "VOICE_MY_NUMBER"):
+            if not getattr(self, VOICE_REQUIRED[name]).startswith("+"):
+                raise SystemExit(f"{name} must be in +<country code><number> form, e.g. +15555550123.")
+        if len(self.voice_webhook_secret) < 16:
+            raise SystemExit("VOICE_WEBHOOK_SECRET is too short; see .env.example for how to make one.")
 
     @property
     def listens_on_loopback_only(self) -> bool:

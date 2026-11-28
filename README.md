@@ -57,6 +57,9 @@ break it until the bridge catches up ([notes](docs/t3-api.md)).
   current one in bold. It updates as steps finish.
 - **Context usage:** the end of a thread shows how full the agent's context window is
   ("22% of context used (220k of 1m)"), as T3's context meter does.
+- **Voice replies (optional):** **Call me** in the Reply menu has the bridge ring your
+  phone through Twilio. Talk, then press 1 to send what you said, or hang up and it opens
+  in the reply box to check and send. New threads have it too. See [Voice replies](#voice-replies-optional).
 - **Queued messages:** while the agent works, a typed reply can wait for the turn to end
   (Queue) or go into the running turn (Steer). Queued messages show at the end of the
   thread; tap one to send it now, steer with it, or remove it. After Stop, a paused
@@ -208,6 +211,43 @@ Your KOReader gestures keep working inside the plugin: edge swipes for brightnes
 and warmth, multiswipes, corner taps, and swiping down from the top for KOReader's
 menu. Swipes go to your gestures first; taps and holds only when they miss a button,
 link, or list item.
+
+## Voice replies (optional)
+
+Typing on an e-reader is slow, so the bridge can call your phone and take a spoken
+reply instead. Tap **Reply → Call me** in a thread, or **Call me** in the box for a new
+thread (pressing 1 then starts the thread with the model and Plan setting chosen there). Your phone rings, it says which
+thread you're replying to, and then you talk. Pauses are fine. On the phone:
+
+- **1** sends what you said to the thread.
+- **Hang up** (on the phone or the e-reader, or press **#**) puts it in the reply box on the e-reader to check and send.
+- **9** clears it and starts over.
+
+Twilio's speech recognition does the transcribing. You need:
+
+1. A Twilio account out of trial, with a voice-capable phone number (`TWILIO_NUMBER`)
+   and a Standard API key (`TWILIO_API_KEY` and `TWILIO_API_SECRET`, with
+   `TWILIO_ACCOUNT_SID`).
+2. Your phone number as `VOICE_MY_NUMBER`, in `+15555550123` form.
+3. A public HTTPS address for Twilio's webhooks. The bridge serves them on
+   `127.0.0.1:8791` (`VOICE_PORT`), only under `/voice/<VOICE_WEBHOOK_SECRET>/`, so
+   publish just that port, not the device API. With Tailscale:
+   `tailscale funnel --bg --https=443 http://127.0.0.1:8791`, then set
+   `VOICE_PUBLIC_URL=https://<machine>.<tailnet>.ts.net`. Any tunnel or reverse proxy
+   works too.
+4. `VOICE_WEBHOOK_SECRET`, a long random string:
+   `python3 -c 'import secrets; print(secrets.token_urlsafe(24))'`. It's what keeps
+   others from calling the webhooks, so keep it out of logs and screenshots.
+5. Save `TWILIO_NUMBER` as a contact on your phone. Phones that screen unknown callers
+   answer the call themselves and hang up before you hear it.
+
+Restart the bridge. Its log says "voice replies on", and threads get **Call me**.
+
+Costs are Twilio's: about $1.15 a month for a US number, about 1.4¢ a minute for the
+call, and 2.5¢ for each stretch of speech recognized with the default model (as of
+2026; see Twilio's voice pricing). A one-minute reply comes to roughly 10¢. Each tap of
+**Call me** places a real call. `VOICE_SPEECH_MODEL` picks the recognizer
+(default `deepgram_nova-3`) and `VOICE_LANGUAGE` its language (default `en-US`).
 
 ## Updating
 

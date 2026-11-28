@@ -311,6 +311,8 @@ local function str(v)
     return type(v) == "string" and v or nil
 end
 
+local callLabel -- a call's status line (voice replies, below); used by the thread's buttons
+
 -- ---------------------------------------------------------------------------
 -- thread list
 
@@ -343,6 +345,7 @@ function T3:onNetworkConnected()
 end
 
 function T3:listItems(body, project_filter)
+    self.voice_on = body.call == true -- the bridge can take a new thread's first message by phone
     local items = {}
     for _i, p in ipairs(body.projects or {}) do
         local header = str(p.title) or _("No project")
@@ -1229,7 +1232,7 @@ local SHORT_LABELS = { ["c:summarize"] = _("Summarize"), ["c:continue"] = _("Con
 --- The Reply button: Continue / Summarize in one row at the top, then the suggested
 --- replies, then Type… to write your own. With none of those it goes straight to typing.
 function T3:showReplyDialog(view, quick, suggestions, can_type)
-    if #quick == 0 and #suggestions == 0 then return self:typeReply(view) end
+    if #quick == 0 and #suggestions == 0 and view.call ~= true then return self:typeReply(view) end
     local dialog
     local function closing(b)
         return {
@@ -1250,14 +1253,24 @@ function T3:showReplyDialog(view, quick, suggestions, can_type)
     for _i, b in ipairs(suggestions) do
         table.insert(rows, { closing(b) })
     end
-    table.insert(rows, { {
+    local type_row = { {
         text = _("Type…"),
         enabled = can_type,
         callback = function()
             UIManager:close(dialog)
             self:typeReply(view)
         end,
-    } })
+    } }
+    if view.call == true and can_type then
+        table.insert(type_row, {
+            text = _("Call me"),
+            callback = function()
+                UIManager:close(dialog)
+                self:callReply(view)
+            end,
+        })
+    end
+    table.insert(rows, type_row)
     dialog = ButtonDialog:new{ title = _("Reply"), buttons = rows }
     UIManager:show(dialog)
 end
@@ -1315,6 +1328,15 @@ function T3:threadButtons(view)
             callback = function() self:reloadThread(view.id) end,
         },
     })
+    -- On a call for this thread: its status and Hang up on top, so the thread stays
+    -- readable (and scrollable) while you talk.
+    local call = self.call
+    if call and call.thread == view.id then
+        table.insert(rows, 1, {
+            { text = callLabel(call.state), id = "call_status", callback = function() end }, -- a label
+            { text = _("Hang up"), callback = function() call.hang_up() end },
+        })
+    end
     return rows
 end
 
@@ -1875,7 +1897,8 @@ function T3:queuedMessage(view, item)
     UIManager:show(dialog)
 end
 
-function T3:typeReply(view)
+--- `initial`: text to start the box with (a spoken reply from Call me).
+function T3:typeReply(view, initial)
     local typed = str(view.typed) or "message"
     local p = type(view.pending) == "table" and view.pending or nil
     -- The box covers the thread, so its title bar names the thread; a question being
@@ -1904,12 +1927,168 @@ function T3:typeReply(view)
     self:compose{
         title = str(view.title) or _("Reply"),
         description = question,
+        input = initial,
         hint = typed == "answer" and _("Your answer") or _("Message"),
         send_text = working and _("Queue") or _("Send"),
         extras = { plan and plan.button },
         alt = working and { text = _("Steer"), on_send = function(text) send(text, "steer") end } or nil,
         on_send = function(text) send(text, working and "queue" or nil) end,
     }
+end
+
+-- ---------------------------------------------------------------------------
+-- voice replies
+
+local CALL_STATUS = {
+    ringing = _("Calling your phone…"),
+    listening = _("Listening. Talk, then press 1 to send it, or hang up to edit it here."),
+    sending = _("Sending…"),
+    ending = _("Hanging up…"),
+}
+
+--- A call's state as one short line, for the call row under a thread.
+callLabel = function(c)
+    local status = str(c and c.status)
+    if status == "ringing" or not status then return _("Ringing your phone…") end
+    if status == "sending" then return _("Sending…") end
+    if status == "ending" then return _("Hanging up…") end
+    local parts = tonumber(c.parts) or 0
+    if parts == 0 then return _("Listening…") end
+    return parts == 1 and _("Listening… heard 1 part") or T(_("Listening… heard %1 parts"), parts)
+end
+
+--- Call me: the bridge rings your phone, and what you say comes back as a reply. Pressing
+--- 1 on the phone sends it; hanging up opens it here in the reply box to check first.
+--- No box covers the thread meanwhile: the call's status and Hang up sit on top of the
+--- thread's buttons, so you can read and scroll while you talk.
+function T3:callReply(view)
+    self:runCall(function() return self.api:call(view.id) end, {
+        thread = view.id,
+        draft = function(text)
+            -- Reply to the freshest view of the thread, if it's still the one open.
+            local current = self.view and self.view.id == view.id and self.view or view
+            self:typeReply(current, text)
+        end,
+        sent = function()
+            notify(_("Sent."), 2)
+            self:reloadThread(view.id, math.huge)
+        end,
+    })
+end
+
+--- Place a call with `start()` (an Api call) and show it until it ends. `on.draft(text)`:
+--- the call ended with something said; `on.sent(call)`: pressing 1 sent it.
+function T3:runCall(start, on)
+    local ok, call = withBusy(_("Calling your phone…"), start)
+    if not ok then return notify(call) end
+    local cid, v = call.id, call.v
+    local dialog, poll
+    local over = false
+    local deadline = os.time() + 15 * 60
+    -- `keep_hold`: a text box opens next and takes over holding thread updates.
+    -- `sent`: what was said went to T3; the caller shows the result, newer than anything held.
+    local inline = on.thread ~= nil
+    -- Redraw the call's thread, if it's the one on screen, to add or drop the call row.
+    local function redrawThread()
+        if self.view and self.view.id == on.thread and self.viewer then
+            self:showThread(self.view, { update = true })
+        end
+    end
+    local function close(keep_hold, sent)
+        over = true
+        UIManager:unschedule(poll)
+        if dialog then UIManager:close(dialog) end
+        dialog = nil
+        if inline then
+            if self.call and self.call.id == cid then self.call = nil end
+            if not sent then redrawThread() end -- a sent reply reloads the thread anyway
+        elseif not keep_hold then
+            self:endTyping(sent)
+        end
+    end
+    local finished, show -- defined below
+    -- Hang up from here: the same as hanging up the phone, so what was said comes back
+    -- as a draft rather than being thrown away.
+    local function hangUp()
+        if over then return end
+        over = true -- stop polling while the bridge hangs up
+        local ok, c = self.api:callCancel(cid)
+        if not ok then return close() end
+        if CALL_STATUS[str(c.status)] then
+            -- "ending": the phone hung up, and its last words are on the way; keep waiting.
+            over = false
+            v = c.v
+            show(c)
+            UIManager:scheduleIn(1, poll)
+        else
+            finished(c)
+        end
+    end
+    show = function(c)
+        if inline then
+            if self.call and self.call.id == cid then self.call.state = c end
+            local button = self.viewer and self.viewer.button_table
+                and self.viewer.button_table:getButtonById("call_status")
+            if button then
+                button:setText(callLabel(c), button.width)
+                UIManager:setDirty(self.viewer, "ui")
+            end
+            return
+        end
+        local text = CALL_STATUS[str(c.status)] or CALL_STATUS.ringing
+        local heard = str(c.text)
+        if heard then text = text .. "\n\n“" .. heard .. "”" end
+        if dialog then UIManager:close(dialog) end
+        dialog = ButtonDialog:new{
+            title = text,
+            dismissable = false,
+            buttons = {{{
+                text = _("Hang up"),
+                callback = hangUp,
+            }}},
+        }
+        UIManager:show(dialog)
+    end
+    finished = function(c)
+        local status = str(c.status)
+        close(status == "draft", status == "sent")
+        if status == "draft" then
+            if str(c.error) then notify(T(_("Couldn't send it (%1). Check it and send it here."), c.error), 6) end
+            on.draft(str(c.text) or "")
+        elseif status == "sent" then
+            on.sent(c)
+        elseif status == "empty" then
+            notify(_("I didn't hear anything to send."))
+        elseif status == "no-answer" then
+            notify(_("Your phone didn't answer."))
+        elseif status == "failed" then
+            notify(T(_("The call didn't go through: %1"), str(c.error) or _("no reason given")), 8)
+        end
+    end
+    poll = function()
+        if over then return end
+        local got, c = self.api:callState(cid, v)
+        if over then return end
+        if got and c.v ~= v then
+            v = c.v
+            if CALL_STATUS[str(c.status)] then show(c) else return finished(c) end
+        elseif os.time() > deadline then
+            close()
+            return notify(got and _("The call is taking too long; giving up on it.") or c)
+        end
+        UIManager:scheduleIn(2, poll)
+    end
+    if inline then
+        self.call = { id = cid, thread = on.thread, state = call, hang_up = hangUp }
+        redrawThread()
+        notify(_("Press 1 on the phone to send, or hang up to check it here first."), 3)
+    else
+        -- Like a text box: hold background redraws (a working thread's next step) so they
+        -- don't cover the call; they show once it ends.
+        self.typing = true
+        show(call)
+    end
+    UIManager:scheduleIn(2, poll)
 end
 
 -- ---------------------------------------------------------------------------
@@ -2182,6 +2361,7 @@ function T3:chooseProject()
         notify(body)
         return
     end
+    self.voice_on = body.call == true
     local dialog
     local rows = {}
     for _i, p in ipairs(body.projects or {}) do
@@ -2211,11 +2391,14 @@ function T3:chooseProject()
     UIManager:show(dialog)
 end
 
-function T3:newThread(project)
-    local model -- nil: the project's default model, from T3's settings
+--- `state`: when coming back from Call me, what the box had: {text, model, model_label, plan}.
+function T3:newThread(project, state)
+    state = state or {}
+    local model = state.model -- nil: the project's default model, from T3's settings
+    local model_label = state.model_label
     local extra
     extra = {
-        text = _("Model"),
+        text = model_label or _("Model"),
         id = "model",
         callback = function()
             -- Put the keyboard away first: while it's up, the first tap on the
@@ -2223,7 +2406,7 @@ function T3:newThread(project)
             local dialog = self.compose_dialog
             if dialog and dialog:isKeyboardVisible() then dialog:onCloseKeyboard() end
             self:pickModel({ project = project.id }, function(id, label)
-                model = id
+                model, model_label = id, label
                 -- Show the choice on the button.
                 self:setComposeButton(extra, label or _("Model"))
                 dialog = self.compose_dialog
@@ -2231,12 +2414,38 @@ function T3:newThread(project)
             end)
         end,
     }
-    local plan = self:planToggle(false)
+    local plan = self:planToggle(state.plan == true)
+    local extras = { extra, plan.button }
+    if self.voice_on then
+        table.insert(extras, {
+            text = _("Call me"),
+            callback = function()
+                local dialog = self.compose_dialog
+                local typed = dialog and dialog:getInputText() or ""
+                if dialog then UIManager:close(dialog) end
+                local mode = plan.on and "plan" or nil
+                self:runCall(function() return self.api:callNew(project.id, model, mode) end, {
+                    draft = function(text)
+                        -- Anything typed before the call stays, with the spoken text after it.
+                        if typed:match("%S") then text = typed:gsub("%s+$", "") .. " " .. text end
+                        self:newThread(project, { text = text, model = model, model_label = model_label,
+                            plan = plan.on })
+                    end,
+                    sent = function(c)
+                        local id = str(c.thread)
+                        if not id then return notify(_("Started.")) end
+                        self:openThread(id)
+                    end,
+                })
+            end,
+        })
+    end
     self:compose{
         title = T(_("New thread in %1"), str(project.title) or ""),
+        input = state.text,
         hint = _("What should the agent do?"),
         send_text = _("Start"),
-        extras = { extra, plan.button },
+        extras = extras,
         on_send = function(text)
             local ok, view = withBusy(_("Starting…"), function()
                 return self.api:startThread(project.id, text, model, plan.on and "plan" or nil)

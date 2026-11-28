@@ -10,6 +10,7 @@ import argparse
 import logging
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -56,10 +57,21 @@ def main() -> None:
     updater = Updater(enabled=cfg.update_check)
     bridge = Bridge(client, suggester, poll_fast=cfg.poll_fast, poll_slow=cfg.poll_slow,
                     token_keeper=keeper, updater=updater)
+    hooks = None
+    if cfg.voice_enabled:
+        from .voice import Twilio, Voice, serve_webhooks
+        bridge.voice = Voice(bridge, Twilio(cfg.twilio_account_sid, cfg.twilio_api_key, cfg.twilio_api_secret),
+                             my_number=cfg.voice_my_number, from_number=cfg.twilio_number,
+                             public_url=cfg.voice_public_url, secret=cfg.voice_webhook_secret,
+                             speech_model=cfg.voice_speech_model, language=cfg.voice_language)
+        # Loopback only: Twilio reaches it through a tunnel or reverse proxy on VOICE_PUBLIC_URL.
+        hooks = serve_webhooks(bridge.voice, "127.0.0.1", cfg.voice_port)
+        threading.Thread(target=hooks.serve_forever, daemon=True, name="voice-hooks").start()
     bridge.start()
     httpd = serve(bridge, cfg.host, cfg.port, cfg.device_token, restart=lambda: _restart(bridge))
-    logging.info("listening on http://%s:%d (suggestions %s)", cfg.host, cfg.port,
-                 "on" if suggester else "off")
+    logging.info("listening on http://%s:%d (suggestions %s, voice replies %s)", cfg.host, cfg.port,
+                 "on" if suggester else "off",
+                 f"on, webhooks on 127.0.0.1:{cfg.voice_port}" if hooks else "off")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -67,6 +79,8 @@ def main() -> None:
     finally:
         bridge.close()
         httpd.server_close()
+        if hooks:
+            hooks.server_close()
 
 
 def _restart(bridge: Bridge) -> None:
@@ -92,13 +106,14 @@ class _DemoSuggester:
 
 
 def run_demo() -> None:
-    from .demo import DemoT3
+    from .demo import DemoT3, demo_voice
 
     host = os.environ.get("BRIDGE_HOST", "127.0.0.1")
     port = int(os.environ.get("BRIDGE_PORT", "8787"))
     token = os.environ.get("BRIDGE_TOKEN", "")
     updater = Updater(enabled=os.environ.get("UPDATE_CHECK", "1").strip().lower() not in ("0", "false", "off", "no"))
     bridge = Bridge(DemoT3(), _DemoSuggester(), poll_fast=1, poll_slow=5, updater=updater)
+    bridge.voice = demo_voice(bridge)
     bridge.start()
     httpd = serve(bridge, host, port, token, restart=lambda: _restart(bridge))
     logging.info("demo bridge on http://%s:%d (no T3; made-up threads)", host, port)

@@ -110,7 +110,9 @@ Same body as the list, plus `"changed": true|false`.
 
 ### `GET /v1/projects`
 
-`{"projects": [{"id", "title"}]}`, for choosing where a new thread goes.
+`{"projects": [{"id", "title"}], "call": true|false}`, for choosing where a new thread goes.
+`call`: whether `POST /v1/projects/<id>/call` works (voice replies are set up). The
+thread list (`GET /v1/threads`) has the same `call` field.
 
 ### `GET /v1/models?thread=<id>` or `?project=<id>`
 
@@ -257,6 +259,9 @@ example, one that can't be resumed). Then there are no buttons.
 - `answer`: answer the current question with it (a custom answer)
 - `none`: nothing can be typed (a question that only accepts its options, or a pending secret)
 
+**`call`**: `true` when the bridge can take a spoken reply for this thread by phone
+(voice replies are set up and `typed` isn't `none`). See `POST /v1/threads/<id>/call`.
+
 ### `GET /v1/threads/<id>/wait?v=<v>&timeout=55&progress=1`
 
 Same body as the thread view, plus `"changed": true|false`.
@@ -389,6 +394,44 @@ What a simulator or emulator open in the thread shows right now, as for a tab (g
 PNG with ImageMagick, else T3's PNG), with `cache-control: no-store`. Nothing is sent to
 the device. Errors: 404 if the device isn't open in this thread, 503 if T3's device hub
 isn't running, 502 if T3 can't list devices or take the screenshot.
+
+### `POST /v1/threads/<id>/call`
+
+Ring the user's phone (Twilio) to take a spoken reply for this thread. Not idempotent:
+each request places a call, so don't retry it. 404 when voice replies are off.
+
+```json
+{"id": "9f2c4a…", "thread": "a1b2c3d4", "status": "ringing", "text": "", "parts": 0,
+ "error": null, "v": 1}
+```
+
+`status` goes `ringing` → `listening` (→ `sending`, or `ending` after a hang-up from the
+device), then ends in one of:
+- `draft`: the call ended with something said. Put `text` in the reply box to check and
+  send. `error` is set if pressing 1 on the phone couldn't send it.
+- `sent`: the user pressed 1 and the bridge sent `text` as a typed reply (queued if a
+  turn is running).
+- `empty`: nothing was said; `no-answer`; `failed` (`error` says why); `cancelled`.
+
+`text` is everything heard so far, and `parts` how many stretches of speech it came in.
+
+### `POST /v1/projects/<id>/call`
+
+The same, for the first message of a new thread in this project. Body:
+`{"model": "<id from /v1/models>", "mode": "plan"}`, both optional, as for `POST /v1/threads`.
+Pressing 1 starts the thread; the call's `thread` is then the new thread's id. The call
+also has `"project": "<id>"` (null for a reply call).
+
+### `GET /v1/calls/<call id>/wait?v=<v>&timeout=55`
+
+The call as above, once its `v` differs from the one given (or after `timeout`).
+
+### `POST /v1/calls/<call id>/cancel`
+
+Hang up a call that's still going, the same as hanging up the phone: what was said is
+kept. Returns the call as `ending` while Twilio delivers the last words (a second or two;
+keep waiting on it), which then turns `draft` (or `empty`). A call not answered yet is
+`cancelled` at once.
 
 ### `GET /v1/prs?scope=mine|all`
 

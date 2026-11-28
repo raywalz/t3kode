@@ -1623,6 +1623,288 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.req("/v1/prs/detail?project=x&repo=me/app&number=2")[0], 404)
 
 
+class FakeTwilio:
+    def __init__(self):
+        self.placed = []
+        self.hung_up = []
+        self.fail = None
+
+    def call(self, to, from_, url, status_url):
+        if self.fail:
+            raise self.fail
+        self.placed.append((to, from_, url, status_url))
+        return f"CA{len(self.placed)}"
+
+    def hang_up(self, sid):
+        self.hung_up.append(sid)
+
+
+class VoiceTests(unittest.TestCase):
+    def setUp(self):
+        from t3bridge.voice import Voice
+        self.t3 = FakeT3()
+        self.t3.threads["t1"] = thread("t1", itemCount=8)
+        self.t3.items["t1"] = list(CONVERSATION)
+        self.b = Bridge(self.t3, None)
+        self.b.settle_delay = 0
+        self.b.refresh()
+        self.tw = FakeTwilio()
+        self.v = Voice(self.b, self.tw, my_number="+15555550100", from_number="+15555550199",
+                       public_url="https://hooks.example/", secret="s" * 20)
+        self.v.late_wait = 0.05
+        self.v.ending_wait = 0.3
+        self.b.voice = self.v
+        self.s1 = render.short_id("t1")
+
+    def tearDown(self):
+        self.b.close()
+
+    def start(self):
+        c = self.v.start(self.s1)
+        return c["id"], f"CA{len(self.tw.placed)}"
+
+    def hook(self, cid, sid, action, **form):
+        return self.v.webhook(action, cid, {"CallSid": sid, **form})
+
+    def sent(self):
+        return [c for c in self.t3.calls if c[0] == "send_message"]
+
+    def test_view_offers_a_call_only_when_voice_is_on(self):
+        self.assertTrue(self.b.thread_view(self.s1)["call"])
+        self.b.voice = None
+        self.assertFalse(self.b.thread_view(self.s1)["call"])
+
+    def test_call_rings_my_number_with_secret_hooks(self):
+        cid, _ = self.start()
+        to, from_, url, status_url = self.tw.placed[0]
+        self.assertEqual((to, from_), ("+15555550100", "+15555550199"))
+        self.assertEqual(url, f"https://hooks.example/voice/{'s' * 20}/answer?id={cid}")
+        self.assertTrue(status_url.endswith(f"/status?id={cid}"))
+        self.assertEqual(self.v.wait(cid, 0, 0)["status"], "ringing")
+
+    def test_answer_then_speech_adds_up_to_a_draft(self):
+        cid, sid = self.start()
+        xml = self.hook(cid, sid, "answer")
+        self.assertIn(">Go ahead.</Say>", xml)  # short: the e-reader shows the keys
+        self.assertIn('speechModel="deepgram_nova-3"', xml)
+        self.assertIn('speechTimeout="5"', xml)  # a number: Twilio refuses "auto" with a speechModel
+        self.assertIn('finishOnKey=""', xml)
+        self.assertEqual(self.v.wait(cid, 0, 0)["status"], "listening")
+        # Nothing is said while you talk.
+        for said in ("Looks good.", "Open the PR"):
+            self.assertNotIn("<Say", self.hook(cid, sid, "gather", SpeechResult=said))
+        state = self.v.wait(cid, 0, 0)
+        self.assertEqual((state["text"], state["parts"]), ("Looks good. Open the PR", 2))
+        self.assertEqual(self.hook(cid, sid, "status", CallStatus="completed"), "")
+        self.assertEqual(self.v.wait(cid, 0, 0)["status"], "draft")
+        self.assertEqual(self.sent(), [])
+
+    def test_press_1_sends_once(self):
+        cid, sid = self.start()
+        self.hook(cid, sid, "answer")
+        self.assertIn("Nothing to send", self.hook(cid, sid, "gather", Digits="1"))
+        self.hook(cid, sid, "gather", SpeechResult="Ship it")
+        self.assertIn("Sent", self.hook(cid, sid, "gather", Digits="1"))
+        self.assertEqual([c[1] for c in self.sent()], [("t1", "Ship it")])
+        self.assertEqual(self.v.wait(cid, 0, 0)["status"], "sent")
+        # Twilio retrying the request, or the hang-up that follows, sends nothing more.
+        self.assertIn("over", self.hook(cid, sid, "gather", Digits="1"))
+        self.hook(cid, sid, "status", CallStatus="completed")
+        self.assertEqual(len(self.sent()), 1)
+        self.assertEqual(self.v.wait(cid, 0, 0)["status"], "sent")
+
+    def test_new_thread_call_starts_the_thread(self):
+        p1 = render.short_id("p1")
+        c = self.v.start_new(p1, mode="plan")
+        cid, sid = c["id"], "CA1"
+        self.assertEqual((c["project"], c["thread"]), (p1, None))
+        self.assertIn("New thread. Go ahead.", self.hook(cid, sid, "answer"))
+        self.hook(cid, sid, "gather", SpeechResult="Fix the login bug")
+        self.assertIn("Started", self.hook(cid, sid, "gather", Digits="1"))
+        name, args, kw = [c for c in self.t3.calls if c[0] == "launch_thread"][0][:3]
+        self.assertEqual((args[0], args[2], kw["interaction_mode"]), ("p1", "Fix the login bug", "plan"))
+        state = self.v.wait(cid, 0, 0)
+        self.assertEqual(state["status"], "sent")
+        new = next(t for t in self.t3.threads if t.startswith("new-"))
+        self.assertEqual(state["thread"], render.short_id(new))
+        self.assertEqual(self.sent(), [])
+
+    def test_new_thread_call_checks_the_project(self):
+        with self.assertRaises(BridgeError) as e:
+            self.v.start_new("nope")
+        self.assertEqual(e.exception.status, 404)
+        with self.assertRaises(BridgeError):
+            self.v.start_new(render.short_id("p1"), mode="weird")
+        self.assertEqual(self.tw.placed, [])
+
+    def test_lists_say_whether_calls_work(self):
+        self.assertTrue(self.b.thread_list()["call"])
+        self.assertTrue(self.b.projects()["call"])
+        self.b.voice = None
+        self.assertFalse(self.b.projects()["call"])
+
+    def test_9_clears_and_pound_finishes(self):
+        cid, sid = self.start()
+        self.hook(cid, sid, "answer")
+        self.hook(cid, sid, "gather", SpeechResult="wrong")
+        self.assertIn("Cleared", self.hook(cid, sid, "gather", Digits="9"))
+        self.assertEqual(self.v.wait(cid, 0, 0)["text"], "")
+        self.hook(cid, sid, "gather", SpeechResult="right")
+        self.assertIn("<Hangup/>", self.hook(cid, sid, "gather", Digits="#"))
+        state = self.v.wait(cid, 0, 0)
+        self.assertEqual((state["status"], state["text"]), ("draft", "right"))
+
+    def test_silence_is_waited_out_quietly(self):
+        from t3bridge.voice import QUIET_LIMIT
+        cid, sid = self.start()
+        self.hook(cid, sid, "answer")
+        self.hook(cid, sid, "gather", SpeechResult="First thought")
+        for _ in range(QUIET_LIMIT - 1):
+            xml = self.hook(cid, sid, "gather")
+            self.assertNotIn("<Say", xml)
+            self.assertIn("<Gather", xml)
+        self.hook(cid, sid, "gather", SpeechResult="second thought")  # talking resets the count
+        for _ in range(QUIET_LIMIT - 1):
+            self.assertNotIn("<Hangup/>", self.hook(cid, sid, "gather"))
+        self.assertIn("<Hangup/>", self.hook(cid, sid, "gather"))
+        state = self.v.wait(cid, 0, 0)
+        self.assertEqual((state["status"], state["text"]), ("draft", "First thought second thought"))
+
+    def test_unanswered_and_unknown_calls(self):
+        cid, sid = self.start()
+        self.assertIsNone(self.hook(cid, "CAother", "answer"))
+        self.assertIsNone(self.hook("nope", sid, "answer"))
+        self.assertIsNone(self.hook(cid, sid, "bogus"))
+        self.hook(cid, sid, "status", CallStatus="no-answer")
+        self.assertEqual(self.v.wait(cid, 0, 0)["status"], "no-answer")
+
+    def test_cancel_hangs_up(self):
+        cid, sid = self.start()
+        self.assertEqual(self.v.cancel(cid)["status"], "cancelled")
+        self.assertEqual(self.tw.hung_up, [sid])
+        self.assertIn("over", self.hook(cid, sid, "answer"))
+
+    def until(self, cid, status, timeout=2):
+        deadline = time.monotonic() + timeout
+        state = self.v.wait(cid, 0, 0)
+        while state["status"] != status and time.monotonic() < deadline:
+            state = self.v.wait(cid, state["v"], deadline - time.monotonic())
+        return state
+
+    def test_hanging_up_on_the_device_keeps_what_was_said(self):
+        cid, sid = self.start()
+        self.hook(cid, sid, "answer")
+        self.hook(cid, sid, "gather", SpeechResult="Keep this")
+        state = self.v.cancel(cid)
+        self.assertEqual(state["status"], "ending")
+        self.assertEqual(self.tw.hung_up, [sid])
+        # Twilio posts the words since the last pause after the call ends, then its report.
+        self.assertEqual(self.hook(cid, sid, "gather", SpeechResult="and this"),
+                         '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>')
+        self.hook(cid, sid, "status", CallStatus="completed")
+        state = self.until(cid, "draft")
+        self.assertEqual((state["status"], state["text"]), ("draft", "Keep this and this"))
+
+    def test_device_hang_up_mid_sentence_waits_for_the_words(self):
+        cid, sid = self.start()
+        self.hook(cid, sid, "answer")
+        self.v.cancel(cid)  # nothing posted yet: Twilio still holds the sentence
+        self.hook(cid, sid, "status", CallStatus="completed")
+        self.hook(cid, sid, "gather", SpeechResult="Late words")  # after the report, within late_wait
+        self.assertEqual(self.until(cid, "draft")["text"], "Late words")
+
+    def test_device_hang_up_with_nothing_said_is_empty(self):
+        cid, sid = self.start()
+        self.hook(cid, sid, "answer")
+        self.v.cancel(cid)
+        self.assertEqual(self.until(cid, "empty")["status"], "empty")  # ending_wait, no report
+
+    def test_wait_wakes_on_change(self):
+        cid, sid = self.start()
+        v = self.v.wait(cid, 0, 0)["v"]
+        threading.Timer(0.1, lambda: self.hook(cid, sid, "answer")).start()
+        t0 = time.monotonic()
+        self.assertEqual(self.v.wait(cid, v, 5)["status"], "listening")
+        self.assertLess(time.monotonic() - t0, 2)
+
+    def test_failed_placement_is_a_502(self):
+        from t3bridge.voice import TwilioError
+        self.tw.fail = TwilioError("Twilio HTTP 401: bad key")
+        with self.assertRaises(BridgeError) as e:
+            self.v.start(self.s1)
+        self.assertEqual(e.exception.status, 502)
+
+    def test_webhook_listener_checks_the_secret(self):
+        from t3bridge.voice import serve_webhooks
+        httpd = serve_webhooks(self.v, "127.0.0.1", 0)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            cid, sid = self.start()
+            base = f"http://127.0.0.1:{httpd.server_address[1]}/voice"
+
+            def post(secret, action="answer"):
+                r = urllib.request.Request(f"{base}/{secret}/{action}?id={cid}",
+                                           data=f"CallSid={sid}".encode(), method="POST")
+                try:
+                    with urllib.request.urlopen(r, timeout=5) as resp:
+                        return resp.status, resp.read().decode()
+                except urllib.error.HTTPError as e:
+                    return e.code, ""
+
+            self.assertEqual(post("wrong")[0], 404)
+            status, xml = post("s" * 20)
+            self.assertEqual(status, 200)
+            self.assertIn("<Gather", xml)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_device_routes(self):
+        httpd = serve(self.b, "127.0.0.1", 0, "")
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+
+        def req(path, body=None):
+            r = urllib.request.Request(base + path, data=None if body is None else b"{}",
+                                       method="GET" if body is None else "POST")
+            try:
+                with urllib.request.urlopen(r, timeout=5) as resp:
+                    return resp.status, json.loads(resp.read())
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read())
+
+        try:
+            status, call = req(f"/v1/threads/{self.s1}/call", {})
+            self.assertEqual((status, call["status"]), (200, "ringing"))
+            status, state = req(f"/v1/calls/{call['id']}/wait?v={call['v']}&timeout=0")
+            self.assertEqual((status, state["status"]), (200, "ringing"))
+            self.assertEqual(req(f"/v1/calls/{call['id']}/cancel", {})[1]["status"], "cancelled")
+            self.assertEqual(req("/v1/calls/nope/wait?timeout=0")[0], 404)
+            self.b.voice = None
+            self.assertEqual(req(f"/v1/threads/{self.s1}/call", {})[0], 404)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_config_needs_all_voice_values(self):
+        import os
+        from unittest import mock
+        from t3bridge.config import Config
+        full = {"T3_TOKEN": "x", "TWILIO_ACCOUNT_SID": "AC1", "TWILIO_API_KEY": "SK1",
+                "TWILIO_API_SECRET": "sec", "TWILIO_NUMBER": "+15555550199",
+                "VOICE_MY_NUMBER": "+15555550100", "VOICE_PUBLIC_URL": "https://hooks.example",
+                "VOICE_WEBHOOK_SECRET": "x" * 24}
+        with mock.patch.dict(os.environ, {"T3_TOKEN": "x"}, clear=True):
+            self.assertFalse(Config.from_env().voice_enabled)
+        with mock.patch.dict(os.environ, full, clear=True):
+            self.assertTrue(Config.from_env().voice_enabled)
+        for change in ({"VOICE_MY_NUMBER": ""}, {"VOICE_PUBLIC_URL": "http://x"},
+                       {"TWILIO_NUMBER": "5555550199"}, {"VOICE_WEBHOOK_SECRET": "short"}):
+            with mock.patch.dict(os.environ, {**full, **change}, clear=True):
+                with self.assertRaises(SystemExit):
+                    Config.from_env()
+
+
 class InstallPluginTest(unittest.TestCase):
     def setUp(self):
         import tempfile

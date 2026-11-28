@@ -66,6 +66,10 @@ def make_handler(bridge: Bridge, device_token: str, restart=None):
         ("GET", re.compile(r"^/v1/threads/(\w+)/browser$"), "browser"),
         ("GET", re.compile(r"^/v1/threads/(\w+)/browser/snapshot$"), "browser_snapshot"),
         ("GET", re.compile(r"^/v1/threads/(\w+)/device/snapshot$"), "device_snapshot"),
+        ("POST", re.compile(r"^/v1/threads/(\w+)/call$"), "call"),
+        ("POST", re.compile(r"^/v1/projects/(\w+)/call$"), "call_new"),
+        ("GET", re.compile(r"^/v1/calls/(\w+)/wait$"), "call_wait"),
+        ("POST", re.compile(r"^/v1/calls/(\w+)/cancel$"), "call_cancel"),
         ("GET", re.compile(r"^/v1/prs$"), "prs"),
         ("GET", re.compile(r"^/v1/prs/detail$"), "pr_detail"),
         ("GET", re.compile(r"^/v1/update$"), "update_info"),
@@ -279,6 +283,26 @@ def make_handler(bridge: Bridge, device_token: str, restart=None):
         def r_settle(self, q, short):
             b = self._body()
             return bridge.settle(short, settled=b.get("settled", True) is not False)
+
+        def _voice(self):
+            if bridge.voice is None:
+                raise BridgeError(404, "voice replies are off on this bridge")
+            return bridge.voice
+
+        def r_call(self, q, short):
+            return self._voice().start(short)
+
+        def r_call_new(self, q, project):
+            b = self._body()
+            model = b.get("model")
+            return self._voice().start_new(project, model=model if isinstance(model, str) and model else None,
+                                           mode=_mode(b))
+
+        def r_call_wait(self, q, cid):
+            return self._voice().wait(cid, _int(q, "v", 0), _int(q, "timeout", 55, 0, MAX_WAIT))
+
+        def r_call_cancel(self, q, cid):
+            return self._voice().cancel(cid)
 
         def r_start(self, q):
             b = self._body()

@@ -289,3 +289,43 @@ class DemoT3:
 
     def close(self):
         pass
+
+
+class _DemoTwilio:
+    """Stands in for Twilio: "rings", then plays back a short dictation through the same
+    webhooks a real call uses, and hangs up so the text lands on the device as a draft."""
+
+    SPEECH = ["Looks good.", "Open the pull request and ask for a review from the auth team."]
+
+    def __init__(self):
+        self.voice = None
+
+    def call(self, to, from_, url, status_url):
+        sid = "CA" + uuid.uuid4().hex
+        cid = url.rsplit("id=", 1)[1]
+
+        def go():
+            hook = lambda action, **form: self.voice.webhook(action, cid, {"CallSid": sid, **form})
+            time.sleep(3)
+            if hook("answer") is None:
+                return
+            for text in self.SPEECH:
+                time.sleep(3)
+                hook("gather", SpeechResult=text)
+            time.sleep(2)
+            hook("status", CallStatus="completed")
+
+        threading.Thread(target=go, daemon=True).start()
+        return sid
+
+    def hang_up(self, sid):
+        pass
+
+
+def demo_voice(bridge):
+    from .voice import Voice
+
+    twilio = _DemoTwilio()
+    twilio.voice = Voice(bridge, twilio, my_number="+15555550100", from_number="+15555550199",
+                         public_url="https://demo.invalid", secret="demo-secret-not-public")
+    return twilio.voice

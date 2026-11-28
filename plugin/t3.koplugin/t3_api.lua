@@ -296,6 +296,28 @@ function Api:deviceSnapshot(id, device_id, width, filepath)
     return self:download("/v1/threads/" .. id .. "/device/snapshot", { device = device_id, w = width }, filepath)
 end
 
+--- Have the bridge ring your phone to take a spoken reply for thread `id`.
+--- Not retried: a retry would ring you twice. Returns the call: { id, status, text, parts, v }.
+function Api:call(id)
+    return self:request("POST", "/v1/threads/" .. id .. "/call", nil, {})
+end
+
+--- Like Api:call, for the first message of a new thread in project `id`. Pressing 1
+--- starts it with `model` and `mode` (as Api:startThread); the call's `thread` is then its id.
+function Api:callNew(id, model, mode)
+    return self:request("POST", "/v1/projects/" .. id .. "/call", nil, { model = model, mode = mode })
+end
+
+--- The call's state now (no waiting). `status`: ringing, listening, sending, then
+--- draft, sent, empty, no-answer, failed or cancelled.
+function Api:callState(call_id, v)
+    return self:request("GET", "/v1/calls/" .. call_id .. "/wait", { v = v, timeout = 0 }, nil, { 4, 8 })
+end
+
+function Api:callCancel(call_id)
+    return self:request("POST", "/v1/calls/" .. call_id .. "/cancel", nil, {})
+end
+
 --- Open pull requests, grouped: `scope` "mine" (yours and review requests) or "all".
 --- T3 asks the host for them, which can take a while for everyone's, so the bridge
 --- may say nothing for most of a minute.
