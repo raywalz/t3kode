@@ -128,7 +128,8 @@ The models to choose from, as in the desktop's model picker:
 
 `favorites` are the models starred in T3, in the order the app's Favorites tab shows them
 (by provider, then by each provider's model order, not the order they were starred).
-`groups` holds every other model, under its provider's name, in the same order, leaving out models hidden in T3's settings, legacy
+`groups` holds every model, favorites included, under its provider's name, in the same order
+(as the app's provider tabs list them), leaving out models hidden in T3's settings, legacy
 models, and providers that are disabled or failing. A model offered by two providers
 (say, a personal and a work account) has the provider in its favorite label. `current` is the
 thread's model, or with `project`, the one a new thread there would get (see

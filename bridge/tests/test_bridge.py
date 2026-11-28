@@ -831,9 +831,13 @@ class BridgeTests(unittest.TestCase):
         # The same model under two providers says which.
         self.assertEqual([f["label"] for f in out["favorites"]],
                          ["Model M · Personal", "Model M · Work"])
-        # Favorites aren't repeated; legacy, hidden and broken providers' models are left out.
-        self.assertEqual(out["groups"], [{"title": "Personal", "models": [
-            {"id": mid("x", "default-model"), "label": "Default"}]}])
+        # Every provider lists all its models, favorites too (as the app's provider tabs do),
+        # so one whose models are all starred (Work) still shows. Legacy, hidden and broken
+        # providers' models are left out.
+        self.assertEqual(out["groups"], [
+            {"title": "Personal", "models": [{"id": mid("x", "m"), "label": "Model M"},
+                                             {"id": mid("x", "default-model"), "label": "Default"}]},
+            {"title": "Work", "models": [{"id": mid("y", "m"), "label": "Model M"}]}])
         self.assertEqual(self.b.models(project=render.short_id("p1"))["current"], mid("x", "default-model"))
 
     def test_models_follow_the_apps_order_not_star_order(self):

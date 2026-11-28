@@ -1365,9 +1365,10 @@ class Bridge:
         return dict(found["sel"])
 
     def models(self, thread: str | None = None, project: str | None = None) -> dict:
-        """The models to choose from: the desktop's favorites, then every other model that
-        isn't hidden or legacy, grouped by provider. `current` is the thread's model, or
-        the one a new thread in `project` would get."""
+        """The models to choose from: the desktop's favorites, then every model that isn't
+        hidden or legacy, grouped by provider (favorites too, as the app's provider tabs
+        list them, so a provider whose models are all starred still shows). `current` is
+        the thread's model, or the one a new thread in `project` would get."""
         self.last_device_at = time.monotonic()
         current = None
         if thread:
@@ -1390,7 +1391,7 @@ class Bridge:
         names = [m["label"] for m in favorites]
         groups: dict[str, list[dict]] = {}
         for m in catalog:
-            if (not m["legacy"] or m["id"] == current_id) and m not in favorites:
+            if not m["legacy"] or m["id"] == current_id:
                 groups.setdefault(m["group"], []).append({"id": m["id"], "label": m["label"]})
         return {
             "current": current_id,
