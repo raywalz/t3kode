@@ -1315,19 +1315,29 @@ class Bridge:
         return self._config[1]
 
     def _catalog(self) -> list[dict]:
-        """Every model of every provider instance, in T3's order:
-        {id, label, group, sel, hidden, legacy}. `sel` is T3's model selection."""
+        """Every model of every provider instance, in the web app's picker order:
+        {id, label, group, sel, hidden, legacy}. `sel` is T3's model selection.
+
+        As in the app, instances are grouped by driver (in the order each driver first
+        appears), with the driver's default instance (id == driver) first in its group;
+        within an instance, models in the user's `modelOrder` come first, then the rest."""
         config = self._server_config()
         prefs = (config.get("settings") or {}).get("providerModelPreferences") or {}
+        providers = [p for p in config.get("providers") or [] if p.get("instanceId")]
+        drivers: dict[str, int] = {}
+        for p in providers:
+            drivers.setdefault(p.get("driver") or p["instanceId"], len(drivers))
+        providers.sort(key=lambda p: (drivers[p.get("driver") or p["instanceId"]],
+                                      p["instanceId"] != (p.get("driver") or p["instanceId"])))
         out = []
-        for p in config.get("providers") or []:
-            inst = p.get("instanceId")
-            if not inst:
-                continue
+        for p in providers:
+            inst = p["instanceId"]
             usable = p.get("enabled", True) and p.get("installed", True) and \
                 p.get("status") not in ("disabled", "error")
             hidden = set((prefs.get(inst) or {}).get("hiddenModels") or [])
-            for m in p.get("models") or []:
+            rank = {slug: i for i, slug in enumerate((prefs.get(inst) or {}).get("modelOrder") or [])}
+            models = sorted(p.get("models") or [], key=lambda m: rank.get(m.get("slug"), len(rank)))
+            for m in models:
                 slug = m.get("slug")
                 if not slug:
                     continue
@@ -1371,13 +1381,11 @@ class Bridge:
         current_id = _model_id(current.get("instanceId") or "", current.get("model") or "") \
             if current else None
         catalog = [m for m in self._catalog() if not m["hidden"]]
-        by_id = {m["id"]: m for m in catalog}
         settings = self._server_config().get("settings") or {}
-        favorites = []
-        for f in settings.get("favorites") or []:
-            m = by_id.get(_model_id(f.get("instanceId") or f.get("provider") or "", f.get("model") or ""))
-            if m and m not in favorites:
-                favorites.append(m)
+        # Listed in catalog order, as the app's Favorites tab does, not in the order starred.
+        starred = {_model_id(f.get("instanceId") or f.get("provider") or "", f.get("model") or "")
+                   for f in settings.get("favorites") or []}
+        favorites = [m for m in catalog if m["id"] in starred]
         # The same model under two providers (say, a personal and a work account): say which.
         names = [m["label"] for m in favorites]
         groups: dict[str, list[dict]] = {}

@@ -836,6 +836,26 @@ class BridgeTests(unittest.TestCase):
             {"id": mid("x", "default-model"), "label": "Default"}]}])
         self.assertEqual(self.b.models(project=render.short_id("p1"))["current"], mid("x", "default-model"))
 
+    def test_models_follow_the_apps_order_not_star_order(self):
+        # Starred in reverse; a custom Codex instance listed before the default one.
+        self.t3.providers = [
+            {"instanceId": "codex_work", "driver": "codex", "displayName": "Codex Work",
+             "models": [{"slug": "a", "name": "A"}, {"slug": "b", "name": "B"}]},
+            {"instanceId": "claudeAgent", "driver": "claudeAgent", "displayName": "Claude",
+             "models": [{"slug": "c", "name": "C"}]},
+            {"instanceId": "codex", "driver": "codex", "displayName": "Codex",
+             "models": [{"slug": "d", "name": "D"}, {"slug": "e", "name": "E"}]},
+        ]
+        config = self.t3.server_config
+        self.t3.server_config = lambda: {**config(), "settings": {**config()["settings"],
+            "favorites": [{"provider": p, "model": m} for p, m in
+                          [("claudeAgent", "c"), ("codex_work", "b"), ("codex_work", "a"),
+                           ("codex", "d"), ("codex", "e")]],
+            "providerModelPreferences": {"codex": {"hiddenModels": [], "modelOrder": ["e"]}}}}
+        self.b._config = None
+        out = self.b.models(thread=self.s1)
+        self.assertEqual([f["label"] for f in out["favorites"]], ["E", "D", "A", "B", "C"])
+
     def test_view_shows_model_and_set_model_switches_it(self):
         v = self.b.thread_view(self.s1)
         self.assertEqual(v["model"], "Model M")
