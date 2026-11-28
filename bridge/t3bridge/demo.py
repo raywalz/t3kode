@@ -96,6 +96,10 @@ def _threads():
         ("dynamic_tool", {"toolName": "Grep", "input": {"pattern": "export function"}}),
         ("subagent", {"title": "Document the auth module", "childThreadId": "docs-auth",
                       "status": "running", "prompt": "Document every exported function in auth/."}),
+        ("reasoning", {"text": "The billing module has no doc comments, so I'll read its tests "
+                               "to see how each function is meant to be called."}),
+        ("dynamic_tool", {"toolName": "Read", "input": {"file_path": "billing/invoice.test.ts"},
+                          "status": "running"}),
     ]), activeRunId="r4")
     thread("docs-auth", "app", "Document the auth module", "running", 1, _run("r5", 3, [
         ("user_message", {"text": "Document every exported function in auth/.", "createdBy": "agent"}),

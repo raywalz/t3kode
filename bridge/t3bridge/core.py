@@ -95,7 +95,8 @@ def _wake_key(t: dict) -> tuple:
 
 def _content_version(body: dict, progress: bool) -> str:
     """Fingerprint of what the device would draw. Without `progress`, a working thread's
-    steps are left out, so new steps don't count as a change until the turn ends."""
+    steps and live activity are left out, so they don't count as a change until the
+    turn ends."""
     shown = {k: body[k] for k in ("title", "state", "model", "mode", "more_before", "pending",
                                   "replies", "typed")}
     shown["prs"] = [(p["number"], p["status"], p["title"]) for p in body["prs"]]
@@ -104,6 +105,7 @@ def _content_version(body: dict, progress: bool) -> str:
     if progress or body["state"] != "working":
         shown["context"] = (body["context"] or {}).get("label")
         shown["entries"] = [(e["role"], e["text"], e.get("expanded")) for e in body["entries"]]
+        shown["live"] = body.get("live")
     raw = json.dumps(shown, sort_keys=True, ensure_ascii=False).encode()
     return hashlib.sha1(raw).hexdigest()[:12]
 
@@ -571,7 +573,7 @@ class Bridge:
                     (it.get("runId") for it in reversed(items) if it.get("runId")), None)
             entries = render.render_items(
                 render.fold_runs(items, live_run, frozenset(expand)), child_info=self._child_info,
-                expanded=frozenset(expand),
+                expanded=frozenset(expand), live_run=live_run if progress else None,
                 image_ref=lambda kind, src, alt: self.images.ref(t["id"], kind, src, alt))
 
             if after is not None:
@@ -610,6 +612,10 @@ class Bridge:
             "plan_mode": self._plan_mode_ok(t.get("modelSelection")),
             "prs": render.pull_requests(t),
             "tasks": render.todo_list(items, live_run),
+            # Only with progress on: otherwise the screen doesn't redraw mid-turn, and a
+            # stale "Running make" would sit there until the turn ends.
+            "live": render.live_activity(items, live_run, t.get("latestRunStartedAt"))
+            if state == "working" and progress else None,
             "context": context,
             "queue": queue and {k: v for k, v in queue.items() if k != "items"} | {
                 "items": [{"id": i["id"], "text": i["text"]} for i in queue["items"]]},

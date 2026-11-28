@@ -657,13 +657,69 @@ class BridgeTests(unittest.TestCase):
         self._add_step(1, item(1, "command_execution", input="make"))
         self.assertTrue(self.b.wait_view(self.s2, pv, timeout=0.05, progress=True)[0])
 
-    def test_invisible_updates_do_not_wake(self):
-        """Reasoning and replies still being written change T3's thread but not the screen."""
-        self._add_step(1, item(1, "command_execution", input="make"))
+    def test_thoughts_and_drafts_wake_only_in_progress_mode(self):
+        """Reasoning and replies still being written show live with progress on, as in the app."""
+        self._add_step(1, item(1, "command_execution", runId="r9", input="make"))
+        v = self.b.thread_view(self.s2)["v"]
         pv = self.b.thread_view(self.s2, progress=True)["v"]
-        self._add_step(2, item(2, "reasoning", text="thinking"))
-        self._add_step(3, item(3, "assistant_message", text="partial", streaming=True))
-        self.assertFalse(self.b.wait_view(self.s2, pv, timeout=0.05, progress=True)[0])
+        self._add_step(2, item(2, "reasoning", runId="r9", text="thinking"))
+        self._add_step(3, item(3, "assistant_message", runId="r9", text="partial", streaming=True))
+        self.assertFalse(self.b.wait_view(self.s2, v, timeout=0.05)[0])
+        changed, view = self.b.wait_view(self.s2, pv, timeout=0.05, progress=True)
+        self.assertTrue(changed)
+        self.assertEqual(view["live"]["draft_text"], "partial")
+        self.assertIn(("thought", "thinking"), [(e["role"], e["text"]) for e in view["entries"]])
+
+    def test_live_activity(self):
+        from datetime import datetime, timezone
+        items = [
+            item(1, "user_message", runId="r1", text="go", startedAt="2026-01-01T00:00:00Z"),
+            item(2, "reasoning", runId="r1", text="Old thought"),
+            item(3, "command_execution", runId="r1", input="make test | tail", status="running"),
+        ]
+        now = datetime(2026, 1, 1, 0, 3, 30, tzinfo=timezone.utc)
+        self.assertEqual(render.live_activity(items, "r1", now=now), {"now": "Running make", "elapsed": "3m"})
+        items[2]["status"] = "completed"
+        items.append(item(4, "assistant_message", runId="r1", text="All **good**", streaming=True))
+        live = render.live_activity(items, "r1", "2025-12-31T22:00:00Z", now=now)
+        self.assertNotIn("now", live)
+        self.assertEqual(live["draft_text"], "All good")
+        self.assertIn("<b>good</b>", live["draft_html"])
+        self.assertEqual(live["elapsed"], "2h 3m")
+        self.assertIsNone(render.live_activity(items, None))
+
+    def test_thought_line(self):
+        self.assertEqual(render.thought_line("**Checking the build**\nThe make target runs lint first."),
+                         "Checking the build")
+        self.assertEqual(render.thought_line("Fast is members-only. So slow servers it is. Try #2."),
+                         "Fast is members-only.")
+        self.assertEqual(render.thought_line("Use `wget -c` to resume"), "Use wget -c to resume")
+        self.assertEqual(render.thought_line("  "), "")
+
+    def test_live_run_shows_each_thought_between_steps(self):
+        items = [
+            item(1, "user_message", runId="r1", text="go"),
+            item(2, "reasoning", runId="r1", text="Need the logs. Then grep."),
+            item(3, "command_execution", runId="r1", input="journalctl -n 5"),
+            item(4, "reasoning", runId="r1", text="**Reading the config**\nIt sets the port."),
+            item(5, "dynamic_tool", runId="r1", toolName="Read", input={"file_path": "a/b.toml"}),
+            item(6, "reasoning", runId="r0", text="An older run's thought."),
+        ]
+        rows = [(e["role"], e["text"]) for e in render.render_items(items, live_run="r1")]
+        self.assertEqual(rows, [("you", "go"), ("thought", "Need the logs."), ("tool", "▸ ran journalctl"),
+                                ("thought", "Reading the config"), ("tool", "▸ read b.toml")])
+        # Without progress (no live_run), thoughts stay hidden as before.
+        self.assertNotIn("thought", [e["role"] for e in render.render_items(items)])
+
+    def test_running_step_shows_once_in_progress_mode(self):
+        self._add_step(1, item(1, "command_execution", runId="r9", input="make", status="running"))
+        self.t3.threads["t2"]["activeRunId"] = "r9"
+        self.b.refresh()
+        roles = [e["role"] for e in self.b.thread_view(self.s2)["entries"]]
+        self.assertIn("tool", roles)
+        view = self.b.thread_view(self.s2, progress=True)
+        self.assertNotIn("tool", [e["role"] for e in view["entries"]])
+        self.assertEqual(view["live"]["now"], "Running make")
 
     def test_failed_suggestions_are_retried_later(self):
         from t3bridge import core

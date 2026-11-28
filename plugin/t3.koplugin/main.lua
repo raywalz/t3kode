@@ -1121,7 +1121,17 @@ local function composeHtml(view, have, anchor, page_break_you, seam)
     end
     local state = str(view.state)
     if state == "working" then
-        table.insert(parts, '<div class="status">' .. esc(_("Working…")) .. "</div>")
+        -- Like the app's live row: the reply being written, then how long the turn has
+        -- run and the step running now. (The turn's thoughts come as "thought" entries.)
+        local live = type(view.live) == "table" and view.live or {}
+        local draft = str(live.draft_html) or (str(live.draft_text) and "<p>" .. esc(live.draft_text) .. "</p>")
+        if draft then
+            table.insert(parts, '<div class="entry agent"><div class="label">' .. esc(_("Agent (writing…)"))
+                .. "</div>" .. placeImages(draft, have or {}) .. "</div>")
+        end
+        local line = str(live.elapsed) and T(_("Working for %1"), live.elapsed) or _("Working…")
+        if str(live.now) then line = line .. " · " .. live.now end
+        table.insert(parts, '<div class="status">' .. esc(line) .. "</div>")
     elseif state == "failed" then
         table.insert(parts, '<div class="status">' .. esc(_("The last run failed.")) .. "</div>")
     end

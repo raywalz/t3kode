@@ -36,12 +36,15 @@ table { border-collapse: collapse; margin: 0.2em 0 0.5em 0; font-size: 0.9em; }
 th, td { border: 1px solid #888; padding: 0.15em 0.35em; text-align: left; vertical-align: top; }
 hr { border: 0; border-top: 1px solid #888; margin: 0.5em 0; }
 .entry { margin: 0 0 0.9em 0; }
+.entry.thought { margin-bottom: 0.35em; }
 .you { border-left: 4px solid black; padding-left: 0.5em; }
 .newpage { page-break-before: always; }
 .label { font-weight: bold; font-size: 0.8em; margin-bottom: 0.15em; }
 .tool, .note { color: #444; font-size: 0.85em; }
 .tool p, .note p { margin: 0; }
 .status { color: #444; font-style: italic; font-size: 0.9em; margin-top: 0.4em; }
+.thought { color: black; font-style: italic; font-size: 0.9em; }
+.thought p { margin: 0; }
 .pending { border: 2px solid black; padding: 0.45em; margin-top: 0.6em; }
 .pending-title { font-weight: bold; margin-bottom: 0.25em; }
 .files { margin-top: 0.4em; font-size: 0.9em; color: #333; }

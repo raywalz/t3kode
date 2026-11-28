@@ -632,15 +632,38 @@ def changed_files(files: list[dict], open_: bool, key: str) -> tuple[str, str]:
                   + (f"<ul>{body}</ul>" if body else "") + "</div>")
 
 
+_THOUGHT_HEADING = re.compile(r"^\s*\*\*([^*\r\n]+)\*\*[ \t]*\r?(?:\n|$)")
+_SENTENCE_END = re.compile(r"[.?!][\"'”’)]?(?=\s)")
+
+
+def thought_line(text: str) -> str:
+    """A thought's high-level line, as T3's live row shows it (liveThoughtLine): its bold
+    heading when it opens with one, else its first sentence."""
+    m = _THOUGHT_HEADING.match(text or "")
+    line = m.group(1) if m else (text or "")
+    line = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", line)
+    line = re.sub(r"^[ \t]*(?:#{1,6}|[-*+]|\d+\.)[ \t]+", "", line, flags=re.M)
+    line = re.sub(r"`+|\*\*|~~", "", line)
+    line = re.sub(r"(^|[^\w*])[*_]([^*_\n]+)[*_](?![\w*])", r"\1\2", line)
+    line = " ".join(line.split())
+    if not m:
+        end = _SENTENCE_END.search(line)
+        if end:
+            line = line[: end.end()]
+    return line if len(line) <= THOUGHT_MAX else line[: THOUGHT_MAX - 1] + "…"
+
+
 def render_items(items: list[dict], child_info=None, image_ref=None,
-                 expanded: frozenset[str] = frozenset()) -> list[dict]:
+                 expanded: frozenset[str] = frozenset(), live_run: str | None = None) -> list[dict]:
     """Turn items → entries [{o, role: you|agent|tool|note|subagent|fold, text, html}],
     tool runs collapsed. `child_info` resolves subagent threads (see _subagent_entry).
     `image_ref(kind, source, alt)` returns HTML for an image ("path": a file an agent
     reply refers to; "attachment": an image attached to a message), or None.
 
     `o` is the ordinal of the entry's last item, so `o > cursor` finds new entries.
-    In-progress assistant text is left out; it appears once it finishes.
+    In-progress assistant text is left out; it appears once it finishes. With
+    `live_run`, that run's still-running steps are left out too (live_activity shows them),
+    and each of its thoughts shows as one line (role "thought"), between the steps.
     A turn's changed files (its checkpoint) go under its last reply, folded unless
     `expanded` has "f" + the run's short id.
     """
@@ -691,12 +714,21 @@ def render_items(items: list[dict], child_info=None, image_ref=None,
             entries.append(_subagent_entry(item, child_info))
             continue
         if kind in _TOOL_KINDS:
+            if live_run and item.get("runId") == live_run and item.get("status") in _OPEN:
+                continue
             tool = describe_tool(item)
             if tool is not None:
                 group.append((tool[0], tool[1], item.get("status") != "failed"))
                 group_o = o
                 if image_ref and kind == "dynamic_tool":
                     group_images += _tool_image_links(item, image_ref)
+            continue
+        if kind == "reasoning" and live_run and item.get("runId") == live_run:
+            line = thought_line(item.get("text") or "")
+            if line:
+                flush()
+                entries.append({"o": o, "role": "thought", "text": line,
+                                "html": f"<p>{html.escape(line, quote=False)}</p>"})
             continue
         if kind in _SILENT:
             continue
@@ -766,6 +798,62 @@ def render_items(items: list[dict], child_info=None, image_ref=None,
             entries.append({"o": o, "role": "note", "text": note, "html": text_html(note)})
     flush()
     return entries
+
+
+# ---- live activity ----------------------------------------------------------
+# Like the app's live row under a working turn: the step running now ("Running make")
+# and the reply it's writing. (The turn's thoughts are entries; see render_items.)
+
+_LIVE_VERB = {"ran": "Running", "read": "Reading", "edited": "Editing", "searched": "Searching",
+              "fetched": "Fetching", "delegated": "Delegating", "used": "Using"}
+_OPEN = ("pending", "running", "waiting")
+THOUGHT_MAX = 280
+DRAFT_MAX = 4000
+
+
+def _clip_end(text: str, limit: int) -> str:
+    """The end of `text` (the newest part), cut at a word."""
+    if len(text) <= limit:
+        return text
+    tail = text[-limit:]
+    cut = tail.find(" ")
+    return "…" + (tail[cut + 1:] if 0 <= cut < 40 else tail)
+
+
+def live_activity(items: list[dict], live_run: str | None, started_at=None, now=None) -> dict | None:
+    """{now, draft_text, draft_html, elapsed} for the running turn, or None.
+    `elapsed` is whole minutes ("4m"), so it changes the view at most once a minute."""
+    if not live_run:
+        return None
+    run = [it for it in items if it.get("runId") == live_run]
+    current = draft = None
+    for it in run:
+        kind = it.get("type")
+        if kind in _TOOL_KINDS and it.get("status") in _OPEN:
+            tool = describe_tool(it)
+            if tool is not None:
+                current = tool
+        elif kind == "assistant_message":
+            draft = it if it.get("streaming") else None
+    live: dict = {}
+    if current:
+        verb, objs = current
+        live["now"] = f"{_LIVE_VERB.get(verb, verb.capitalize())} {', '.join(objs[:3])}".strip()
+    if draft is not None:
+        body = split_replies(draft.get("text") or "")[0].strip()
+        if body:
+            body = _clip_end(body, DRAFT_MAX)
+            live["draft_text"] = clean_text(body)
+            live["draft_html"] = to_html(body)
+    start = _ts(started_at) if started_at else None
+    if start is None:
+        start = min((t for t in (_ts(it.get("startedAt")) for it in run if it.get("startedAt")) if t),
+                    default=None)
+    if start is not None:
+        current_time = now or datetime.now(start.tzinfo)
+        minutes = int((current_time - start).total_seconds() // 60)
+        live["elapsed"] = f"{minutes // 60}h {minutes % 60}m" if minutes >= 60 else f"{max(minutes, 0)}m"
+    return live or None
 
 
 def preview(entries: list[dict], width: int = 80) -> str:

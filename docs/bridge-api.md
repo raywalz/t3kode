@@ -27,8 +27,8 @@ changes, so a device never redraws an identical screen.
 By default, new steps in a turn that's still running don't count either: the view
 changes when the turn ends, a question appears, or suggestions arrive. Pass
 `progress=1` to the thread view and the thread wait (and `"progress": true` in the
-reply body) to include the running turn's steps. The device's "Show progress while
-working" setting does this.
+reply body) to include the running turn's steps and its live activity (`live`, below).
+The device's "Show progress while working" setting does this.
 
 The thread list has its own counter `v` with the same wait semantics.
 
@@ -159,7 +159,7 @@ uses it. Returns the new thread view. Choosing the current model changes nothing
   questions stay visible. The turn that's still running is never folded. The fold's
   `html` is a link to `t3:run:<run>`. Pass `expand=<run>,<run>` (in the reply body:
   `"expand": [...]`) to show those turns' steps, with the fold shown open ("▾").
-- `entries`: `role` is `you | agent | tool | note | fold | subagent`.
+- `entries`: `role` is `you | agent | tool | thought | note | fold | subagent`.
 - A finished turn that changed files gets a line under its last reply, like the app's
   Changed files card: "▸ 3 files changed · +120 −30" (from the turn's checkpoint). It
   links to `t3:run:f<run>`; pass `f<run>` in `expand` to list the files with their
@@ -189,6 +189,13 @@ uses it. Returns the new thread view. Choosing the current model changes nothing
   null when T3 has no report: `{used, max, percent, label}`, e.g. label `22% of context
   used (220k of 1m)`; `max` and `percent` are null when the provider doesn't give the
   window size. Mid-turn changes don't count as a change unless `progress` is on.
+- `live`: with `progress` on, what the running turn is doing now, like the app's live
+  row, or null: `{now, draft_text, draft_html, elapsed}`, each left out when there's
+  nothing to show. `now`: the step still running (`Running make`, `Reading a.py`); it's
+  left out of `entries` until it finishes. `draft_text`/`draft_html`: the reply it's
+  writing so far. `elapsed`: how long the turn has run, in whole minutes (`4m`, `1h 5m`).
+  Also with `progress` on, each of the running turn's thoughts is an entry with role
+  `thought`: one line, its bold heading or else its first sentence, as the app shows it.
 - `queue`: messages waiting for the running turn to end, or null:
   `{items: [{id, text}], held, can_send_now, can_steer}`, oldest first. `held`: Stop
   paused the queue. See `POST /v1/threads/<id>/queue`.
