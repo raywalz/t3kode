@@ -272,9 +272,15 @@ def make_handler(bridge: Bridge, device_token: str, restart=None):
             b = self._body()
             if b.get("decline") is True:
                 return bridge.answer_secret(short, None)
+            values = b.get("values")
+            if values is not None:
+                if not (isinstance(values, dict) and values
+                        and all(isinstance(k, str) and isinstance(v, str) for k, v in values.items())):
+                    raise BridgeError(400, "`values` maps each field name to a string")
+                return bridge.answer_secret(short, None, values)
             secret = b.get("secret")
             if not isinstance(secret, str):
-                raise BridgeError(400, "send `secret` or `decline: true`")
+                raise BridgeError(400, "send `secret`, `values` or `decline: true`")
             return bridge.answer_secret(short, secret)
 
         def r_action(self, q, short):

@@ -116,6 +116,10 @@ _SECRET_REASONS = {
     "already_answered": "This secret request was already answered.",
     "agent_stopped": "The agent that asked has stopped, so this secret can't be used.",
     "store_failed": "T3 couldn't store the secret.",
+    "fields_mismatch": "This request asks for different values. Update T3 KOde and try again.",
+    "reference_unreadable": "T3 couldn't read the secret from the secret provider.",
+    "record_failed": "T3 saved the secret but couldn't update the request.",
+    "not_a_file_request": "This secret wasn't saved for shell use.",
 }
 
 
@@ -126,6 +130,18 @@ def _secret_error(e: Exception) -> str:
         if f'"{reason}"' in text:
             return message
     return "T3 didn't accept the answer."
+
+
+def _secret_fields(item: dict) -> list[dict]:
+    """A secret request's fields (T3's OrchestrationV2SecretRequestField), as the
+    device shows them: name, label, placeholder, and whether to hide what's typed."""
+    out = []
+    for f in item.get("fields") or []:
+        if isinstance(f, dict) and f.get("name"):
+            out.append({"name": f["name"], "label": f.get("label") or f["name"],
+                        "placeholder": f.get("placeholder"),
+                        "secret": f.get("secret") is not False})
+    return out
 
 
 def _is_settled(t: dict) -> bool:
@@ -719,23 +735,46 @@ class Bridge:
         link = render.secret_request_link(item)
         if link:
             view["link"] = link
+        fields = _secret_fields(item)
+        if fields:
+            # A card asking for several values (e.g. email and password): answer with
+            # `values`, one per field name, in this order.
+            view["fields"] = fields
         buttons = [{"id": f"x:{sid}:enter", "label": "Enter secret", "kind": "secret"},
                    {"id": f"x:{sid}:decline", "label": "Decline", "kind": "answer"},
                    {"id": "c:stop", "label": "Stop", "kind": "shortcut"}]
         # "none": typed text must never go to the chat while a secret is being asked for.
         return view, buttons, "none"
 
-    def answer_secret(self, short: str, secret: str | None) -> dict:
-        """Give the pending secret request its value (or decline it with None).
-        The value goes straight to T3, which stores it; it's never logged or kept here."""
+    def answer_secret(self, short: str, secret: str | None,
+                      values: dict[str, str] | None = None) -> dict:
+        """Give the pending secret request its value (or decline it with both None).
+        A card with fields takes `values`, keyed by field name; others take `secret`.
+        The values go straight to T3, which stores them; they're never logged or kept here."""
         self.last_device_at = time.monotonic()
         t = self._thread(short)
         item = self._pending_secret(t)
         if item is None:
             raise BridgeError(409, "no secret is being asked for")
-        if secret is not None and not secret.strip():
-            raise BridgeError(400, "the secret is empty")
-        answer = {"type": "decline"} if secret is None else {"type": "save", "secret": secret.strip()}
+        fields = _secret_fields(item)
+        if secret is None and values is None:
+            answer = {"type": "decline"}
+        elif fields:
+            if values is None:
+                raise BridgeError(400, "this request asks for several values: send `values`")
+            names = [f["name"] for f in fields]
+            if set(values) != set(names):
+                raise BridgeError(400, "send `values` for exactly these fields: " + ", ".join(names))
+            empty = [f["label"] for f in fields if not str(values[f["name"]]).strip()]
+            if empty:
+                raise BridgeError(400, "empty: " + ", ".join(empty))
+            answer = {"type": "save", "values": {n: values[n].strip() for n in names}}
+        else:
+            if secret is None:
+                raise BridgeError(400, "this request asks for one value: send `secret`")
+            if not secret.strip():
+                raise BridgeError(400, "the secret is empty")
+            answer = {"type": "save", "secret": secret.strip()}
         try:
             self.client.answer_secret(t["id"], item["id"], answer)
         except Exception as e:

@@ -244,9 +244,11 @@ function Api:queueAction(id, action, item)
 end
 
 --- Answer a secret request. Not retried: a retry after a lost reply would be refused as
---- already answered. The value is only in this request's body.
-function Api:answerSecret(id, secret)
-    return self:request("POST", "/v1/threads/" .. id .. "/secret", nil, { secret = secret })
+--- already answered. The value is only in this request's body. A card with fields takes
+--- `values` ({field name = value}) instead of `secret`.
+function Api:answerSecret(id, secret, values)
+    local body = values and { values = values } or { secret = secret }
+    return self:request("POST", "/v1/threads/" .. id .. "/secret", nil, body)
 end
 
 function Api:settle(id, settled)

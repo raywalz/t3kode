@@ -514,6 +514,45 @@ class BridgeTests(unittest.TestCase):
         self.b.reply(self.s1, reply_id=decline)
         self.assertEqual(self.t3.calls[-1][1], ("t1", "sec-1", {"type": "decline"}))
 
+    def _ask_fields(self):
+        self._ask_secret()
+        self.t3.items["t1"][-1]["fields"] = [
+            {"name": "email", "label": "Email", "placeholder": "you@example.com", "secret": False},
+            {"name": "password", "label": "Password"}]
+        self.t3.threads["t1"] = dict(self.t3.threads["t1"], itemCount=10)
+        self.b.refresh()
+
+    def test_secret_fields_round_trip(self):
+        self._ask_fields()
+        v = self.b.thread_view(self.s1)
+        self.assertEqual(v["pending"]["fields"], [
+            {"name": "email", "label": "Email", "placeholder": "you@example.com", "secret": False},
+            {"name": "password", "label": "Password", "placeholder": None, "secret": True}])
+        for bad in ({"email": "a@b.c"}, {"email": "a@b.c", "password": "x", "extra": "y"},
+                    {"email": "a@b.c", "password": "  "}):
+            with self.assertRaises(BridgeError) as cm:
+                self.b.answer_secret(self.s1, None, bad)
+            self.assertEqual(cm.exception.status, 400)
+        with self.assertRaises(BridgeError):  # a field card doesn't take one `secret`
+            self.b.answer_secret(self.s1, "hunter2")
+        self.b.answer_secret(self.s1, None, {"email": " a@b.c ", "password": "hunter2"})
+        self.assertEqual(self.t3.calls[-1][1], ("t1", "sec-1", {
+            "type": "save", "values": {"email": "a@b.c", "password": "hunter2"}}))
+
+    def test_single_secret_view_has_no_fields(self):
+        self._ask_secret()
+        self.assertNotIn("fields", self.b.thread_view(self.s1)["pending"])
+        with self.assertRaises(BridgeError):  # nor `values`
+            self.b.answer_secret(self.s1, None, {"x": "y"})
+
+    def test_secret_fields_mismatch_message(self):
+        self._ask_fields()
+        self.t3.secret_error = 'failed: {"reason": "fields_mismatch"}'
+        with self.assertRaises(BridgeError) as cm:
+            self.b.answer_secret(self.s1, None, {"email": "a@b.c", "password": "hunter2"})
+        self.assertEqual(str(cm.exception),
+                         "This request asks for different values. Update T3 KOde and try again.")
+
     def test_secret_errors_never_echo_the_value(self):
         self._ask_secret()
         self.t3.secret_error = 'failed: {"reason": "already_answered", "secret": "hunter2"}'

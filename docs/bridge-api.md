@@ -251,6 +251,17 @@ A `secret` request comes from T3's request_secret tool. Its buttons are **Enter 
 and **Decline** (an ordinary reply). While one is pending, `typed` is `none`, so typed text
 can't end up in the chat.
 
+A card that asks for several values (say, an email and a password) also has `fields`, in
+the order to ask for them:
+
+```json
+"fields": [{"name": "email", "label": "Email", "placeholder": "you@example.com", "secret": false},
+           {"name": "password", "label": "Password", "placeholder": null, "secret": true}]
+```
+
+`secret: false` means the value can be shown while it's typed. Answer such a card with
+`values`, not `secret`.
+
 `note` may also say the request has to be answered on another device (for
 example, one that can't be resumed). Then there are no buttons.
 
@@ -318,7 +329,8 @@ shows in T3.
 ### `POST /v1/threads/<id>/secret`
 
 `{"secret": "<value>"}` answers the thread's pending secret request; `{"decline": true}`
-declines it. The bridge passes the value straight to T3 (`secrets.answerRequest`), which
+declines it. A request with `fields` takes `{"values": {"<field name>": "<value>", ...}}`
+instead, with exactly one non-empty value per field (400 otherwise). The bridge passes the value straight to T3 (`secrets.answerRequest`), which
 stores it the way the desktop does; the thread only learns "saved". The bridge doesn't
 log or keep the value, and its error messages never include it. Not retried: send it once.
 Returns the new thread view.

@@ -2237,30 +2237,48 @@ function T3:changeModel(view)
 end
 
 --- Ask for the value of a secret request in a masked box. The value goes to the bridge
---- in one request and isn't kept anywhere on the device.
-function T3:enterSecret(view)
+--- in one request and isn't kept anywhere on the device. A card with fields (say, email
+--- and password) asks for each in turn, showing what's typed only for fields that aren't
+--- secret, and sends them together. Cancel or a failed save never declines the request.
+function T3:enterSecret(view, step, values)
     local p = type(view.pending) == "table" and view.pending or {}
+    local fields = type(p.fields) == "table" and #p.fields > 0 and p.fields or nil
+    step, values = step or 1, values or {}
+    local field = fields and fields[step] or {}
+    local last = not fields or step == #fields
+    local description = str(p.text)
+    if fields then
+        local label = str(field.label) or str(field.name) or ""
+        if #fields > 1 then label = T(_("%1 (%2 of %3)"), label, step, #fields) end
+        description = description and (description .. "\n\n" .. label) or label
+    end
     local dialog
     dialog = InputDialog:new{
         title = str(p.header) or _("Secret"),
-        description = str(p.text),
+        description = description,
         input = "",
-        input_hint = str(p.placeholder) or _("Secret"),
-        text_type = "password",
+        input_hint = (fields and (str(field.placeholder) or str(field.label)))
+            or str(p.placeholder) or _("Secret"),
+        text_type = (not fields or field.secret ~= false) and "password" or nil,
         buttons = {{
             { text = _("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
             {
-                text = _("Save"),
+                text = last and _("Save") or _("Next"),
                 is_enter_default = true,
                 callback = function()
                     local secret = dialog:getInputText()
                     if not secret:match("%S") then return end
                     dialog._t3_sent = true
                     UIManager:close(dialog)
+                    if fields then
+                        values[str(field.name)] = secret
+                        secret = nil
+                        if not last then return self:enterSecret(view, step + 1, values) end
+                    end
                     local ok, result = withBusy(_("Saving…"), function()
-                        return self.api:answerSecret(view.id, secret)
+                        return self.api:answerSecret(view.id, secret, fields and values or nil)
                     end)
-                    secret = nil
+                    secret, values = nil, nil
                     if ok then
                         self:showThread(result, { update = true, page = math.huge })
                     else
