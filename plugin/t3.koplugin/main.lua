@@ -41,6 +41,9 @@ local POLL_LIST = 30
 -- to MAX_TURNS in all; beyond that, earlier turns open on a screen of their own.
 local LOAD_TURNS = 3
 local MAX_TURNS = 30
+-- The plugin's Api (set by T3:makeApi), so ensureConnected can check the bridge answers.
+-- Declared up here, above T3:makeApi, so the assignment there reaches this local.
+local bridge_api
 
 local STATE_LABEL = {
     needs_you = _("needs you"),
@@ -227,8 +230,6 @@ end
 -- Staying connected. KOReader turns Wi-Fi off before the Kobo sleeps and, unless its
 -- "Restore Wi-Fi connection on resume" is on, leaves it off on waking. So a request
 -- turns Wi-Fi back on first, and waking up with T3 open reconnects (T3:onResume).
-
-local bridge_api -- the plugin's Api (set by T3:makeApi), to check the bridge answers
 
 local function offline()
     return Device:hasWifiToggle() and not NetworkMgr:isConnected()
