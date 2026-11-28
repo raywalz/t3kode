@@ -64,6 +64,9 @@ break it until the bridge catches up ([notes](docs/t3-api.md)).
   (Queue) or go into the running turn (Steer). Queued messages show at the end of the
   thread; tap one to send it now, steer with it, or remove it. After Stop, a paused
   queue can be resumed.
+- **Usage:** the list's menu has **Usage**: what the agents cost and how many tokens they
+  used today (by hour), in the last 7 days or this month (by day), by model and provider,
+  from the same scan as T3's Usage page. It needs the token's `diagnostics:read` scope.
 - **Pull requests** linked to a thread show at its end with their status: open, draft
   or merged, checks, review, and conflicts. Tap one to read it: its checks, description,
   conversation, review comments, commits and changed files, and the threads linked to it.
@@ -113,9 +116,9 @@ cd bridge && python3 -m t3bridge
 `.env` needs at least:
 
 - `T3_TOKEN`: a scoped session token. Mint one with
-  `t3 auth session issue --scope orchestration:read --scope orchestration:operate --scope filesystem:read --ttl 30d --token-only`.
+  `t3 auth session issue --scope orchestration:read --scope orchestration:operate --scope filesystem:read --scope diagnostics:read --ttl 30d --token-only`.
   (`filesystem:read` lets the bridge show images that agent replies point to; leave it
-  out and those show as placeholders.)
+  out and those show as placeholders. `diagnostics:read` lets it show usage stats.)
   Set `T3_TOKEN_COMMAND` to that same command and the bridge renews the token by itself.
 - `BRIDGE_TOKEN`: a secret the e-reader sends. Make one with
   `python3 -c 'import secrets; print(secrets.token_urlsafe(24))'`.

@@ -465,6 +465,16 @@ reviewers, description, conversation (bots' comments one line each), review comm
 optional. 404 for an unknown project, 502 if T3 can't read the PR. If the comments,
 diff or linked threads can't be read, the page leaves those sections out.
 
+### `GET /v1/usage?period=today|week|month`
+
+Usage stats from T3's `server.getUsageSummary` (the scan behind its Usage page), for
+today, the last 7 days, or this month so far, in the bridge machine's time zone:
+`{period, title, html}`. `html` holds the total cost, tokens and sessions, the token
+mix (input, cache read and write, output), then tables by model (cheap ones folded into
+one row), by provider when there's more than one, and by hour (today) or day, the latest
+first, then notes on unpriced records and histories T3 couldn't read. 403 when the
+bridge's T3 token lacks `diagnostics:read`, 502 when T3 can't read usage.
+
 ### `POST /v1/update`
 
 `{"action": "update"}` updates the bridge to `release` in the background and returns the

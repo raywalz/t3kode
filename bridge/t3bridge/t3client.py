@@ -368,6 +368,11 @@ class T3Client:
         """The first slice of the unified diff: {patch, truncated, nextCursor}. HTTP only."""
         return self._http("POST", "/api/pull-requests/diff", body=ref)
 
+    def usage_summary(self, payload: dict) -> dict:
+        """Token and cost totals by day (or hour), provider and model: `server.getUsageSummary`.
+        Needs the token's diagnostics:read permission."""
+        return self.rpc("server.getUsageSummary", payload)
+
     def devices(self) -> dict:
         """Every simulator and emulator T3 knows: `devices` (DeviceSummary objects) and
         `sessions` ({threadId, hostId, deviceId, platform}), which say which thread has

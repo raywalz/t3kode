@@ -16,8 +16,9 @@ import uuid
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
-from . import prs, render
+from . import prs, render, usage
 from .images import Images
 from .t3client import (PREVIEW_HOST_SETUP, PREVIEW_TAB_GONE, T3Error, T3RpcError, T3SocketError,
                        pending_requests_from)
@@ -1479,6 +1480,40 @@ class Bridge:
             "html": prs.detail_html(detail, activity, files, breakdown, threads),
         }
 
+    # ---- usage ----------------------------------------------------------------
+
+    def usage_summary(self, period: str = "today") -> dict:
+        """What the agents cost and how many tokens they used today, in the last 7 days
+        or this month, from the same scan as T3's Usage page."""
+        self.last_device_at = time.monotonic()
+        if period not in usage.PERIODS:
+            raise BridgeError(400, "`period` is today, week or month")
+        tz = usage.local_time_zone()
+        try:
+            zone = ZoneInfo(tz)
+        except (KeyError, ValueError):
+            tz, zone = "UTC", timezone.utc
+        now = datetime.now(zone)
+        since, until = usage.window(period, now.date())
+        payload = {"sinceDay": since.isoformat(), "untilDay": until.isoformat(), "timeZone": tz}
+        if period == "today":
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            payload.update(resolution="hour", sinceTime=_utc_iso(start), untilTime=_utc_iso(now))
+        try:
+            summary = self.client.usage_summary(payload)
+        except T3RpcError as e:
+            if "diagnostics:read" in json.dumps(e.exit):
+                raise BridgeError(403, "The bridge's T3 token can't read usage. Mint a new one with "
+                                       "--scope diagnostics:read added (see the README).") from None
+            raise BridgeError(502, _t3_message(e)) from None
+        except (T3Error, OSError) as e:
+            raise BridgeError(502, _t3_message(e)) from None
+        return {
+            "period": period,
+            "title": f"Usage · {usage.PERIODS[period]}",
+            "html": usage.summary_html(summary, period, render.format_tokens),
+        }
+
     def _thread_devices(self, thread_id: str, strict: bool = False) -> list[dict]:
         """Simulators and emulators open in the thread. T3 can screenshot any device on
         its machine, so only these are shown. A server without devices lists none."""
@@ -1553,6 +1588,10 @@ _PR_UNAVAILABLE = {
     "cli-unauthenticated": "T3 can't read pull requests: this host has no working credentials.",
     "provider-unsupported": "T3 can't browse pull requests for this project's host yet.",
 }
+
+
+def _utc_iso(t: datetime) -> str:
+    return t.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _t3_message(e: Exception) -> str:

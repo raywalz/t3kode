@@ -72,6 +72,7 @@ def make_handler(bridge: Bridge, device_token: str, restart=None):
         ("POST", re.compile(r"^/v1/calls/(\w+)/cancel$"), "call_cancel"),
         ("GET", re.compile(r"^/v1/prs$"), "prs"),
         ("GET", re.compile(r"^/v1/prs/detail$"), "pr_detail"),
+        ("GET", re.compile(r"^/v1/usage$"), "usage"),
         ("GET", re.compile(r"^/v1/update$"), "update_info"),
         ("POST", re.compile(r"^/v1/update$"), "update"),
         ("GET", re.compile(r"^/v1/plugin$"), "plugin"),
@@ -223,6 +224,9 @@ def make_handler(bridge: Bridge, device_token: str, restart=None):
             if not project or not repo or not number:
                 raise BridgeError(400, "send `project`, `repo` and `number`")
             return bridge.pull_request_detail(project, repo, number, q.get("host", [None])[0] or None)
+
+        def r_usage(self, q):
+            return bridge.usage_summary(q.get("period", ["today"])[0])
 
         def r_projects(self, q):
             return bridge.projects()

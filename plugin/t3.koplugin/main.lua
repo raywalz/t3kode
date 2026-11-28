@@ -700,6 +700,10 @@ function T3:showListActions()
                 UIManager:close(dialog)
                 self:showPullRequests()
             end }},
+            {{ text = _("Usage"), callback = function()
+                UIManager:close(dialog)
+                self:showUsage()
+            end }},
             {{ text = _("Refresh"), callback = function()
                 UIManager:close(dialog)
                 withBusy(_("Refreshing…"), function() self:refreshList(true) end)
@@ -1629,6 +1633,53 @@ function T3:showPullRequest(pr, old_page)
     -- Hold the thread's background redraws while this is open, as the reply box does.
     self.typing = true
     self.pr_page = page
+    UIManager:show(page)
+    if old_page then UIManager:close(old_page) end
+end
+
+local USAGE_PERIODS = {
+    { id = "today", text = _("Today") },
+    { id = "week", text = _("7 days") },
+    { id = "month", text = _("Month") },
+}
+
+--- Usage stats, as on T3's Usage page: cost and tokens by model and over time.
+--- `period`: "today", "week" or "month". Tapping the shown period again refreshes it.
+function T3:showUsage(period, old_page)
+    period = period or "today"
+    local ok, body = withBusy(_("Loading usage…"), function() return self.api:usage(period) end)
+    if not ok then
+        notify(body)
+        return
+    end
+    local page
+    local row = {}
+    for _i, p in ipairs(USAGE_PERIODS) do
+        table.insert(row, {
+            text = p.id == period and ("• " .. p.text) or p.text,
+            callback = function() self:showUsage(p.id, page) end,
+        })
+    end
+    table.insert(row, { text = _("Close"), callback = function() page:onClose() end })
+    page = ThreadView:new{
+        title = str(body.title) or _("Usage"),
+        html = str(body.html) or "",
+        start_at_bottom = false,
+        start_page = old_page and old_page.usage_period == period and old_page:currentPage() or nil,
+        refresh = old_page and "ui" or "full",
+        buttons = { row },
+        close_callback = function()
+            if self.usage_page == page then -- not when another period replaced it
+                self.usage_page = nil
+                self:endTyping(false)
+            end
+        end,
+    }
+    page.usage_period = period
+    Gestures.attach(page)
+    -- Hold the thread list's background redraws while this is open, as the PR page does.
+    self.typing = true
+    self.usage_page = page
     UIManager:show(page)
     if old_page then UIManager:close(old_page) end
 end

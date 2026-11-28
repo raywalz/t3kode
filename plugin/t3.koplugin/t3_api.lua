@@ -332,4 +332,9 @@ function Api:pullRequest(pr)
         { project = pr.project, repo = pr.repo, number = pr.number, host = pr.host }, nil, { 60, 90 })
 end
 
+--- Usage stats for `period` ("today", "week" or "month"): { period, title, html }.
+function Api:usage(period)
+    return self:request("GET", "/v1/usage", { period = period }, nil, { 30, 60 })
+end
+
 return Api

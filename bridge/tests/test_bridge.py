@@ -9,7 +9,9 @@ import unittest
 import urllib.error
 import urllib.request
 
-from t3bridge import prs, render
+from datetime import date
+
+from t3bridge import prs, render, usage
 from t3bridge.core import Bridge, BridgeError
 from t3bridge.server import serve
 from t3bridge.suggest import parse_suggestions
@@ -1271,6 +1273,106 @@ class PullRequestTests(unittest.TestCase):
         pr = self.b.thread_view(render.short_id("t1"))["prs"][0]
         self.assertEqual((pr["project"], pr["host"]), (self.p1, "github.com"))
         self.b.pull_request_detail(pr["project"], pr["repo"], pr["number"], pr["host"])
+
+
+def _bucket(day, provider, model, cost, tokens, hour=None, unpriced=0):
+    b = {"day": day, "provider": provider, "model": model, "costUsd": cost, "cacheSavingsUsd": cost / 2,
+         "totals": {"uncachedInputTokens": tokens // 2, "cachedInputTokens": tokens // 4,
+                    "cacheCreationTokens": 0, "outputTokens": tokens - tokens // 2 - tokens // 4,
+                    "reasoningTokens": 0},
+         "costSource": "modelPriced", "records": 1, "unpricedRecords": unpriced, "sessions": 1}
+    if hour:
+        b["hourStart"] = hour
+    return b
+
+
+class UsageTests(unittest.TestCase):
+    def setUp(self):
+        self.t3 = FakeT3()
+        self.payloads = []
+
+        def summary(payload):
+            self.payloads.append(payload)
+            return {"contractVersion": 6, "timeZone": payload["timeZone"],
+                    "sinceDay": payload["sinceDay"], "untilDay": payload["untilDay"],
+                    "buckets": [_bucket(payload["untilDay"], "claude", "opus", 12.5, 2_000_000)],
+                    "sources": [{"fingerprint": {"provider": "claude"}, "status": "ok", "distinctSessions": 3}],
+                    "pricing": {"status": "fresh"}, "scanDurationMs": 5}
+        self.t3.usage_summary = summary
+        self.b = Bridge(self.t3, None)
+
+    def test_windows(self):
+        today = date(2026, 11, 28)
+        self.assertEqual(usage.window("today", today), (today, today))
+        self.assertEqual(usage.window("week", today), (date(2026, 11, 22), today))
+        self.assertEqual(usage.window("month", today), (date(2026, 11, 1), today))
+
+    def test_money(self):
+        self.assertEqual([usage.money(v) for v in (0, 0.004, 3.456, 1234.5)], ["$0.00", "<$0.01", "$3.46", "$1,234"])
+
+    def test_page_totals_models_and_days(self):
+        summary = {"timeZone": "UTC", "sinceDay": "2026-11-22", "untilDay": "2026-11-28",
+                   "buckets": [_bucket("2026-11-27", "claude", "opus", 10, 1000),
+                               _bucket("2026-11-28", "claude", "opus", 5, 1000),
+                               _bucket("2026-11-28", "codex", "gpt", 1, 500, unpriced=2)],
+                   "sources": [{"fingerprint": {"provider": "claude"}, "status": "ok", "distinctSessions": 4},
+                               {"fingerprint": {"provider": "grok"}, "status": "missing", "distinctSessions": 0},
+                               {"fingerprint": {"provider": "codex"}, "status": "failed", "distinctSessions": 1,
+                                "message": "unreadable"}],
+                   "pricing": {"status": "fresh"}}
+        html = usage.summary_html(summary, "week", render.format_tokens)
+        self.assertIn("<b>$16.00</b> · 2.5k tokens · 5 sessions", html)
+        self.assertIn("Sun Nov 22 to Sat Nov 28", html)
+        self.assertIn("<h3>By model</h3>", html)
+        self.assertLess(html.index("<td>opus</td>"), html.index("<td>gpt</td>"))  # costliest first
+        self.assertIn("<h3>By provider</h3>", html)
+        self.assertLess(html.index("<td>Sat Nov 28</td>"), html.index("<td>Fri Nov 27</td>"))  # latest first
+        self.assertIn("2 records had no price", html)
+        self.assertIn("codex's history couldn't be read: unreadable", html)
+        self.assertNotIn("grok", html)  # not installed isn't a problem
+
+    def test_hours_in_the_summary_zone(self):
+        summary = {"timeZone": "Europe/Berlin", "sinceDay": "2026-11-28", "untilDay": "2026-11-28",
+                   "buckets": [_bucket("2026-11-28", "claude", "opus", 1, 10, hour="2026-11-28T08:00:00.000Z"),
+                               _bucket("2026-11-28", "claude", "opus", 1, 10, hour="2026-11-28T09:00:00.000Z")],
+                   "sources": [], "pricing": {}}
+        html = usage.summary_html(summary, "today", render.format_tokens)
+        self.assertIn("<td>10:00</td>", html)
+        self.assertLess(html.index("<td>10:00</td>"), html.index("<td>09:00</td>"))
+
+    def test_billions(self):
+        summary = {"sinceDay": "2026-11-01", "untilDay": "2026-11-28", "sources": [],
+                   "buckets": [_bucket("2026-11-02", "claude", "opus", 1, 1_520_000_000)]}
+        self.assertIn("1.5b tokens", usage.summary_html(summary, "month", render.format_tokens))
+
+    def test_empty(self):
+        html = usage.summary_html({"sinceDay": "2026-11-28", "untilDay": "2026-11-28", "buckets": [],
+                                   "sources": []}, "today", render.format_tokens)
+        self.assertIn("No agent usage", html)
+        self.assertNotIn("<table>", html)
+
+    def test_bridge_asks_for_the_period(self):
+        out = self.b.usage_summary("today")
+        self.assertEqual(out["title"], "Usage · Today")
+        p = self.payloads[-1]
+        self.assertEqual((p["sinceDay"], p["resolution"]), (p["untilDay"], "hour"))
+        self.assertTrue(p["sinceTime"].endswith("Z") and p["untilTime"].endswith("Z"))
+        self.b.usage_summary("week")
+        self.assertNotIn("resolution", self.payloads[-1])
+        with self.assertRaises(BridgeError) as e:
+            self.b.usage_summary("year")
+        self.assertEqual(e.exception.status, 400)
+
+    def test_missing_scope_says_how_to_fix(self):
+        def denied(payload):
+            raise T3RpcError("server.getUsageSummary", {"_tag": "Failure", "cause": [{"_tag": "Fail", "error": {
+                "_tag": "EnvironmentAuthorizationError", "message": "missing scope",
+                "requiredPermission": "diagnostics:read"}}]})
+        self.t3.usage_summary = denied
+        with self.assertRaises(BridgeError) as e:
+            self.b.usage_summary("week")
+        self.assertEqual(e.exception.status, 403)
+        self.assertIn("diagnostics:read", str(e.exception))
 
 
 class TokenTests(unittest.TestCase):
