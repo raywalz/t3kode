@@ -1324,8 +1324,9 @@ function T3:threadButtons(view)
             callback = function() self:showBrowser(view) end,
         },
         {
-            text = _("Refresh"),
-            callback = function() self:reloadThread(view.id) end,
+            -- Same as the title bar's X: back to the parent thread or the list.
+            text = _("Close"),
+            callback = function() if self.viewer then self.viewer:onClose() end end,
         },
     })
     -- On a call for this thread: its status and Hang up on top, so the thread stays
