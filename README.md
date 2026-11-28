@@ -57,9 +57,11 @@ break it until the bridge catches up ([notes](docs/t3-api.md)).
   current one in bold. It updates as steps finish.
 - **Context usage:** the end of a thread shows how full the agent's context window is
   ("22% of context used (220k of 1m)"), as T3's context meter does.
-- **Voice replies (optional):** **Call me** in the Reply menu has the bridge ring your
-  phone through Twilio. Talk, then press 1 to send what you said, or hang up and it opens
-  in the reply box to check and send. New threads have it too. See [Voice replies](#voice-replies-optional).
+- **Voice replies (optional):** **Call me** has the bridge ring your phone through
+  Twilio and keep the call up as the e-reader's microphone: think out loud while you
+  read, and what you say collects as a draft for the thread on screen. Press 1 or say
+  "send it" to send it, then go on to the next thread. See
+  [Voice replies](#voice-replies-optional).
 - **Queued messages:** while the agent works, a typed reply can wait for the turn to end
   (Queue) or go into the running turn (Steer). Queued messages show at the end of the
   thread; tap one to send it now, steer with it, or remove it. After Stop, a paused
@@ -217,28 +219,29 @@ link, or list item.
 
 ## Voice replies (optional)
 
-Typing on an e-reader is slow, so the bridge can call your phone and take a spoken
-reply instead. Tap **Reply → Call me** in a thread, or **Call me** in the box for a new
-thread (pressing 1 then starts the thread with the model and Plan setting chosen there). Your phone rings, it says which
-thread you're replying to, and then you talk. Pauses are fine. On the phone:
+Typing on an e-reader is slow, so the bridge can call your phone and use it as the
+e-reader's microphone. Tap **Reply → Call me** in a thread (or **Call me and stay on** in
+the list's menu). Your phone rings and says "Listening", and the call stays up while you
+read, so you can think out loud: a few seconds after each pause, what you said is added
+to a draft for the thread on screen. Under it, the call's row says **Listening** (or
+"Draft: 12 words"), next to **Send** and **Hang up**. Nothing covers the thread, so you
+keep reading and turning pages, with gaps as long as you like.
 
-- **1** sends what you said to the thread.
-- **Hang up** (on the phone or the e-reader, or press **#**) puts it in the reply box on the e-reader to check and send.
-- Ending with "**send it**" works like pressing 1.
-- **9** clears it and starts over.
+- Tap the draft to see it in the reply box: **Back** returns to reading and keeps it
+  (with any edits), **Clear** empties it.
+- **1** on the phone, ending a phrase with "**send it**", or **Send** sends it; **9**
+  clears it. Then go on to the next thread on the same call.
+- With a text box open (a reply, or a new thread), the words go straight into it.
+- Hang up on the phone, with **Hang up** under the thread, or from the list's menu; a
+  draft left over opens in the reply box. After 15 minutes of silence it hangs up by
+  itself.
 
-**Staying on the call.** In Settings, switch **Call me** to *stay on the call*. Then the
-call stays up, and the phone works like a microphone for the e-reader, so you can think out
-loud while you read: a few seconds after each pause, what you said is added to a draft for
-the thread on screen. Under it, the call's row says **Listening** (or "Draft: 12 words"),
-next to **Send** and **Hang up**. Nothing covers the thread, so you keep reading and
-turning pages, with gaps as long as you like. Tap the draft to see it in the reply box:
-**Back** returns to reading and keeps it (with any edits), **Clear** empties it. **1** on
-the phone, ending with "send it", or **Send** sends it; **9** clears it. Then go on to the
-next thread without hanging up. With a text box open (a reply, or a new thread), the words
-go straight into it. Hang up on the phone, with **Hang up** under the thread, or from the
-list's menu (which can also start the call); a draft left over opens in the reply box.
-After 15 minutes of silence it hangs up by itself.
+**One call per reply.** Settings can switch **Call me** to *one call per reply*: each
+Call me is its own call, for one message. The phone says "Go ahead", and then you talk;
+pauses are fine. **1** (or "send it") sends it; hanging up (on the phone or the
+e-reader, or **#**) puts it in the reply box to check and send; **9** starts over. In this
+mode, Call me in the box for a new thread works the same way, and pressing 1 starts the
+thread with the model and Plan setting chosen there.
 
 **OpenAI live transcription (recommended).** With `VOICE_OPENAI_API_KEY` set, OpenAI's
 `gpt-live-transcribe` does the transcribing: Twilio streams the call's audio to the bridge

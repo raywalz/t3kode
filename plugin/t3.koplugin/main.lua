@@ -112,9 +112,9 @@ function T3:pageBreakYou()
     return self.settings:nilOrTrue("page_break_you")
 end
 
---- Call me's mode: one call per reply (false), or a call that stays up as a microphone.
+--- Call me's mode: a call that stays up as a microphone (the default), or one call per reply.
 function T3:micMode()
-    return self.settings:isTrue("call_microphone")
+    return self.settings:nilOrTrue("call_microphone")
 end
 
 function T3:hasOpenAI()
