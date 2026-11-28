@@ -1801,8 +1801,32 @@ function T3:showThread(view, opts)
     self.view = view
     -- Show the new view before closing the old one, so nothing underneath flashes through.
     UIManager:show(viewer)
-    if old then UIManager:close(old) end
+    if old then
+        self:takeStackPlace(viewer, old)
+        UIManager:close(old)
+    end
     self:scheduleThreadPoll()
+end
+
+--- Put `new` where `old` sits in the window stack. UIManager:show puts it on top, which
+--- would bury a menu or dialog that was open over the thread when an update arrived.
+--- Everything above a repainted widget repaints too, so the menu stays drawn on top.
+function T3:takeStackPlace(new, old)
+    local stack = UIManager._window_stack
+    if type(stack) ~= "table" then return end
+    local old_i, new_i
+    for i, window in ipairs(stack) do
+        if window.widget == old then old_i = i elseif window.widget == new then new_i = i end
+    end
+    if not (old_i and new_i) or new_i == old_i + 1 then return end
+    table.insert(stack, old_i + 1, table.remove(stack, new_i))
+    -- show() applied the thread's tap settings; the widget on top keeps its own.
+    local top = stack[#stack].widget
+    local Input = Device.input
+    if Input then
+        Input.disable_double_tap = top.disable_double_tap ~= false
+        Input.tap_interval_override = top.tap_interval_override
+    end
 end
 
 --- Open a subagent's thread from its parent. Closing it comes back to the parent.
