@@ -63,7 +63,9 @@ def main() -> None:
         bridge.voice = Voice(bridge, Twilio(cfg.twilio_account_sid, cfg.twilio_api_key, cfg.twilio_api_secret),
                              my_number=cfg.voice_my_number, from_number=cfg.twilio_number,
                              public_url=cfg.voice_public_url, secret=cfg.voice_webhook_secret,
-                             speech_model=cfg.voice_speech_model, language=cfg.voice_language)
+                             speech_model=cfg.voice_speech_model, language=cfg.voice_language,
+                             openai_key=cfg.voice_openai_api_key, openai_model=cfg.voice_openai_model,
+                             transcriber=cfg.voice_transcriber)
         # Loopback only: Twilio reaches it through a tunnel or reverse proxy on VOICE_PUBLIC_URL.
         hooks = serve_webhooks(bridge.voice, "127.0.0.1", cfg.voice_port)
         threading.Thread(target=hooks.serve_forever, daemon=True, name="voice-hooks").start()
@@ -71,7 +73,8 @@ def main() -> None:
     httpd = serve(bridge, cfg.host, cfg.port, cfg.device_token, restart=lambda: _restart(bridge))
     logging.info("listening on http://%s:%d (suggestions %s, voice replies %s)", cfg.host, cfg.port,
                  "on" if suggester else "off",
-                 f"on, webhooks on 127.0.0.1:{cfg.voice_port}" if hooks else "off")
+                 f"on ({'/'.join(bridge.voice.transcribers)}), webhooks on 127.0.0.1:{cfg.voice_port}"
+                 if hooks else "off")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

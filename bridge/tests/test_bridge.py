@@ -1884,6 +1884,59 @@ class VoiceTests(unittest.TestCase):
         self.b.voice = None
         self.assertFalse(self.b.projects()["call"])
 
+    def test_send_it_at_the_end_of_a_phrase_sends(self):
+        from t3bridge.voice import split_send
+        self.assertEqual(split_send("Ship it, send it."), ("Ship it", True))
+        self.assertEqual(split_send("Send it"), ("", True))
+        self.assertEqual(split_send("Don't send it yet, wait"), ("Don't send it yet, wait", False))
+        self.assertEqual(split_send("I'll resend items"), ("I'll resend items", False))
+        cid, sid = self.start()
+        self.hook(cid, sid, "answer")
+        self.hook(cid, sid, "gather", SpeechResult="Looks good.")
+        self.assertIn("Sent", self.hook(cid, sid, "gather", SpeechResult="Open the PR. Send it."))
+        self.assertEqual([c[1] for c in self.sent()], [("t1", "Looks good. Open the PR")])
+
+    def test_microphone_call_turns_phrases_into_events(self):
+        c = self.v.start_mic()
+        cid, sid = c["id"], "CA1"
+        self.assertTrue(c["mic"])
+        self.assertIn("Listening.", self.hook(cid, sid, "answer"))
+        for form in ({"SpeechResult": "First thought"}, {"SpeechResult": "and more, send it"},
+                     {"Digits": "9"}, {"SpeechResult": "Next thread"}, {"Digits": "1"}, {}):
+            xml = self.hook(cid, sid, "gather", **form)
+            self.assertNotIn("<Say", xml)  # it never talks back
+            self.assertIn("<Gather", xml)
+        state = self.v.wait(cid, 0, 0)
+        self.assertEqual(state["status"], "listening")
+        self.assertEqual([(e["kind"], e.get("text")) for e in state["events"]], [
+            ("text", "First thought"), ("text", "and more"), ("send", None),
+            ("clear", None), ("text", "Next thread"), ("send", None)])
+        # The device asks only for what it hasn't seen.
+        self.assertEqual([e["n"] for e in self.v.wait(cid, 0, 0, after=4)["events"]], [5, 6])
+        self.assertEqual(self.sent(), [])  # the device does the sending
+        self.hook(cid, sid, "status", CallStatus="completed")
+        self.assertEqual(self.v.wait(cid, 0, 0)["status"], "ended")
+
+    def test_microphone_call_waits_out_long_silence(self):
+        from t3bridge.voice import MIC_QUIET_LIMIT
+        c = self.v.start_mic()
+        cid, sid = c["id"], "CA1"
+        self.hook(cid, sid, "answer")
+        for _ in range(MIC_QUIET_LIMIT - 1):
+            self.assertNotIn("<Hangup/>", self.hook(cid, sid, "gather"))
+        self.assertIn("<Hangup/>", self.hook(cid, sid, "gather"))
+        self.assertEqual(self.v.wait(cid, 0, 0)["status"], "ended")
+
+    def test_microphone_hang_up_from_the_device_keeps_the_last_phrase(self):
+        c = self.v.start_mic()
+        cid, sid = c["id"], "CA1"
+        self.hook(cid, sid, "answer")
+        self.assertEqual(self.v.cancel(cid)["status"], "ending")
+        self.hook(cid, sid, "gather", SpeechResult="last words")
+        self.hook(cid, sid, "status", CallStatus="completed")
+        state = self.until(cid, "ended")
+        self.assertEqual(state["events"][-1]["text"], "last words")
+
     def test_9_clears_and_pound_finishes(self):
         cid, sid = self.start()
         self.hook(cid, sid, "answer")
@@ -2021,6 +2074,8 @@ class VoiceTests(unittest.TestCase):
             self.assertEqual((status, state["status"]), (200, "ringing"))
             self.assertEqual(req(f"/v1/calls/{call['id']}/cancel", {})[1]["status"], "cancelled")
             self.assertEqual(req("/v1/calls/nope/wait?timeout=0")[0], 404)
+            status, mic = req("/v1/mic", {})
+            self.assertEqual((status, mic["mic"], mic["events"]), (200, True, []))
             self.b.voice = None
             self.assertEqual(req(f"/v1/threads/{self.s1}/call", {})[0], 404)
         finally:
@@ -2044,6 +2099,273 @@ class VoiceTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {**full, **change}, clear=True):
                 with self.assertRaises(SystemExit):
                     Config.from_env()
+
+
+class FakeLive:
+    """Stands in for live.LiveSession in the stream tests: feed() says the next scripted phrase."""
+
+    def __init__(self, on_text, script):
+        self.on_text = on_text
+        self.script = list(script)
+        self.speaking = False
+        self.last_speech = time.monotonic()
+        self.started = self.finished = False
+
+    def start(self):
+        self.started = True
+
+    def feed(self, payload):
+        if self.script:
+            self.on_text(self.script.pop(0))
+
+    def finish(self):
+        self.finished = True
+
+
+class FakeSock:
+    def __init__(self, messages):
+        self.messages = [json.dumps(m) for m in messages]
+
+    def recv(self):
+        from t3bridge.ws import WebSocketClosed
+        if not self.messages:
+            raise WebSocketClosed("done")
+        return self.messages.pop(0)
+
+
+class LiveTranscriptionTests(unittest.TestCase):
+    def setUp(self):
+        from t3bridge.voice import Voice
+        self.t3 = FakeT3()
+        self.t3.threads["t1"] = thread("t1", itemCount=8)
+        self.t3.items["t1"] = list(CONVERSATION)
+        self.b = Bridge(self.t3, None)
+        self.b.settle_delay = 0
+        self.b.refresh()
+        self.tw = FakeTwilio()
+        self.tw.redirects = []
+        self.tw.redirect = lambda sid, xml: self.tw.redirects.append((sid, xml))
+        self.script = []
+        self.lives = []
+
+        def make(on_text):
+            live = FakeLive(on_text, self.script)
+            self.lives.append(live)
+            return live
+
+        self.v = Voice(self.b, self.tw, my_number="+15555550100", from_number="+15555550199",
+                       public_url="https://hooks.example", secret="s" * 20, openai_key="sk-test",
+                       live_session=make)
+        self.v.late_wait = 0.05
+        self.v.ending_wait = 0.3
+        self.b.voice = self.v
+        self.s1 = render.short_id("t1")
+
+    def tearDown(self):
+        self.b.close()
+
+    def stream(self, cid, sid, *events):
+        msgs = [{"event": "connected"},
+                {"event": "start", "start": {"callSid": sid, "customParameters": {"call": cid}}}]
+        for e in events:
+            if e == "media":
+                msgs.append({"event": "media", "media": {"track": "inbound", "payload": "/w=="}})
+            else:
+                msgs.append({"event": "dtmf", "dtmf": {"digit": e}})
+        msgs.append({"event": "stop"})
+        self.v.stream(FakeSock(msgs))
+
+    def test_openai_call_streams_its_audio(self):
+        cid = self.v.start(self.s1, transcriber="openai")["id"]
+        xml = self.v.webhook("answer", cid, {"CallSid": "CA1"})
+        self.assertIn('>Go ahead.</Say><Connect><Stream url="wss://hooks.example/voice/%s/stream">' % ("s" * 20), xml)
+        self.assertIn('<Parameter name="call" value="%s"/>' % cid, xml)
+        self.assertNotIn("<Gather", xml)
+
+    def test_streamed_phrases_and_keys_go_through_the_call(self):
+        cid = self.v.start(self.s1, transcriber="openai")["id"]
+        self.v.webhook("answer", cid, {"CallSid": "CA1"})
+        self.script[:] = ["Looks good.", "Open the PR."]
+        self.stream(cid, "CA1", "media", "media", "1")
+        sent = [c[1] for c in self.t3.calls if c[0] == "send_message"]
+        self.assertEqual(sent, [("t1", "Looks good. Open the PR.")])
+        self.assertEqual(self.v.wait(cid, 0, 0)["status"], "sent")
+        self.assertEqual(len(self.tw.redirects), 1)  # "Sent. Bye." and hang up
+        self.assertIn("<Hangup/>", self.tw.redirects[0][1])
+        self.assertTrue(self.lives[0].finished)
+
+    def test_streamed_send_it_on_a_microphone_call(self):
+        cid = self.v.start_mic(transcriber="openai")["id"]
+        self.v.webhook("answer", cid, {"CallSid": "CA1"})
+        self.script[:] = ["First thought", "and the rest, send it"]
+        self.stream(cid, "CA1", "media", "media")
+        events = self.v.wait(cid, 0, 0)["events"]
+        self.assertEqual([(e["kind"], e.get("text")) for e in events],
+                         [("text", "First thought"), ("text", "and the rest"), ("send", None)])
+        self.assertEqual(self.tw.redirects, [])  # a microphone call never talks back
+
+    def test_phone_hang_up_waits_for_the_last_phrase(self):
+        cid = self.v.start(self.s1, transcriber="openai")["id"]
+        self.v.webhook("answer", cid, {"CallSid": "CA1"})
+        self.v.webhook("status", cid, {"CallSid": "CA1", "CallStatus": "completed"})
+        self.assertEqual(self.v.wait(cid, 0, 0)["status"], "ending")
+        self.script[:] = ["Last words"]
+        self.stream(cid, "CA1", "media")  # the stream's end finishes the call
+        state = self.v.wait(cid, 0, 0)
+        self.assertEqual((state["status"], state["text"]), ("draft", "Last words"))
+        self.assertEqual(self.tw.redirects, [])  # nothing to redirect: the call is over
+
+    def test_unreachable_openai_falls_back_to_twilio(self):
+        def broken(on_text):
+            live = FakeLive(on_text, [])
+            def fail():
+                raise OSError("no route to OpenAI")
+            live.start = fail
+            return live
+        self.v.live_session = broken
+        cid = self.v.start(self.s1, transcriber="openai")["id"]
+        self.v.webhook("answer", cid, {"CallSid": "CA1"})
+        self.stream(cid, "CA1", "media")
+        self.assertEqual(len(self.tw.redirects), 1)
+        self.assertIn("<Gather", self.tw.redirects[0][1])
+        self.assertIn("Twilio is listening instead", self.tw.redirects[0][1])
+        self.assertIn("<Gather", self.v.webhook("gather", cid, {"CallSid": "CA1", "SpeechResult": "hi"}))
+
+    def test_stream_for_another_call_is_refused(self):
+        cid = self.v.start(self.s1, transcriber="twilio")["id"]  # a Twilio-transcribed call
+        self.v.webhook("answer", cid, {"CallSid": "CA1"})
+        self.stream(cid, "CA1", "media")
+        self.assertEqual(self.lives, [])
+
+    def test_openai_is_the_default_when_it_is_set_up(self):
+        from t3bridge.voice import Voice
+        self.assertEqual(self.v.transcriber, "openai")
+        self.assertIn("<Connect>", self.v.webhook("answer", self.v.start(self.s1)["id"], {"CallSid": "CA1"}))
+        self.assertEqual(self.b.thread_list()["transcriber"], "openai")
+        v = Voice(self.b, self.tw, my_number="+1", from_number="+1", public_url="https://x", secret="s" * 20,
+                  openai_key="sk", transcriber="twilio")
+        self.assertEqual(v.transcriber, "twilio")
+
+    def test_openai_needs_a_key(self):
+        from t3bridge.voice import Voice
+        v = Voice(self.b, self.tw, my_number="+1", from_number="+1", public_url="https://x", secret="s" * 20)
+        self.assertEqual(v.transcribers, ["twilio"])
+        with self.assertRaises(BridgeError) as e:
+            v.start(self.s1, transcriber="openai")
+        self.assertEqual(e.exception.status, 400)
+        self.assertEqual(self.v.transcribers, ["twilio", "openai"])
+        self.assertEqual(self.b.thread_list()["transcribers"], ["twilio", "openai"])
+
+
+class LiveAudioTests(unittest.TestCase):
+    def test_mulaw_to_24k_pcm(self):
+        from t3bridge.live import decode_ulaw, to_pcm24k
+        self.assertEqual(decode_ulaw(bytes([0xFF, 0x7F, 0x00, 0x80])), [0, 0, -32124, 32124])
+        self.assertEqual(len(to_pcm24k([0, 300])), 2 * 6)  # three samples out for each in
+
+    def frames(self, loud_ms, quiet_ms):
+        from t3bridge.live import Phrases
+        p = Phrases()
+        tone = [3000 if i % 2 else -3000 for i in range(160)]
+        actions = []
+        for _ in range(loud_ms // 20):
+            actions += p.feed(tone)
+        for _ in range(quiet_ms // 20):
+            actions += p.feed([0] * 160)
+        return [a[0] for a in actions]
+
+    def test_phrases_start_and_end_at_pauses(self):
+        kinds = self.frames(600, 1200)
+        self.assertEqual(kinds[0], "start")
+        self.assertEqual(kinds[-1], "end")
+        self.assertEqual(kinds.count("end"), 1)
+
+    def test_clicks_are_not_phrases(self):
+        self.assertEqual(self.frames(40, 1200), [])  # too short to start
+        self.assertEqual(self.frames(100, 1200)[-1], "drop")  # started, but too short to send
+
+    def test_transcripts_come_back_in_spoken_order(self):
+        from t3bridge.live import LiveSession
+        sent, got = [], []
+
+        class Sock:
+            closed = False
+
+            def send_text(self, text):
+                sent.append(json.loads(text))
+
+            def recv(self):
+                from t3bridge.ws import WebSocketClosed
+                raise WebSocketClosed("test")
+
+            def close(self):
+                pass
+
+        s = LiveSession("sk", "gpt-live-transcribe", got.append, connect=lambda url, headers: Sock())
+        s.start()
+        s.reader.join(1)
+        self.assertEqual(sent[0]["session"]["audio"]["input"]["turn_detection"], None)
+        self.assertEqual(sent[0]["session"]["audio"]["input"]["transcription"]["languages"], ["en"])
+        loud = bytes([0x00, 0x80] * 80)  # 20 ms of a loud square wave in μ-law
+        for _ in range(30):
+            s.feed(loud)
+        for _ in range(60):
+            s.feed(bytes([0xFF] * 160))
+        kinds = [m["type"] for m in sent]
+        self.assertIn("input_audio_buffer.append", kinds)
+        self.assertEqual(kinds[-1], "input_audio_buffer.commit")
+        # Two phrases committed; the second's transcript arrives first.
+        s.order[:] = ["a", "b"]
+        s._result("b", "second")
+        self.assertEqual(got, [])
+        s._result("a", "first")
+        self.assertEqual(got, ["first", "second"])
+
+
+class WebSocketTests(unittest.TestCase):
+    def test_client_and_server_talk(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from t3bridge import ws
+
+        class Echo(BaseHTTPRequestHandler):
+            def do_GET(self):
+                sock = ws.server_handshake(self)
+                try:
+                    while True:
+                        sock.send_text(sock.recv().upper())
+                except ws.WebSocketClosed:
+                    pass
+
+            def log_message(self, *a):
+                pass
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Echo)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            c = ws.connect(f"ws://127.0.0.1:{httpd.server_address[1]}/x")
+            c.send_text("hello")
+            self.assertEqual(c.recv(), "HELLO")
+            big = "a" * 70000  # a 64-bit length
+            c.send_text(big)
+            self.assertEqual(c.recv(), big.upper())
+            c.close()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_stream_path_needs_the_secret(self):
+        from t3bridge.voice import Voice, serve_webhooks
+        v = Voice(None, FakeTwilio(), my_number="+1", from_number="+1", public_url="https://x", secret="s" * 20)
+        httpd = serve_webhooks(v, "127.0.0.1", 0)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            r = urllib.request.Request(f"http://127.0.0.1:{httpd.server_address[1]}/voice/wrong/stream")
+            with self.assertRaises(urllib.error.HTTPError) as e:
+                urllib.request.urlopen(r, timeout=5)
+            self.assertEqual(e.exception.code, 404)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
 
 
 class InstallPluginTest(unittest.TestCase):

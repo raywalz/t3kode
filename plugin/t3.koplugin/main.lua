@@ -112,6 +112,28 @@ function T3:pageBreakYou()
     return self.settings:nilOrTrue("page_break_you")
 end
 
+--- Call me's mode: one call per reply (false), or a call that stays up as a microphone.
+function T3:micMode()
+    return self.settings:isTrue("call_microphone")
+end
+
+function T3:hasOpenAI()
+    for _i, t in ipairs(self.transcribers or {}) do
+        if t == "openai" then return true end
+    end
+    return false
+end
+
+--- Who transcribes calls: the one chosen in Settings, if the bridge has it; otherwise the
+--- bridge's default (OpenAI when it's set up there).
+function T3:transcriber()
+    local wanted = self.settings:readSetting("call_transcriber")
+    for _i, t in ipairs(self.transcribers or {}) do
+        if t == wanted then return wanted end
+    end
+    return self.default_transcriber
+end
+
 function T3:progressParam()
     return self:showProgress() and 1 or nil
 end
@@ -153,43 +175,66 @@ function T3:showSettings()
     end
     local url = self.settings:readSetting("bridge_url")
     local token = self.settings:readSetting("bridge_token")
+    local rows = {
+        {{
+            text = self:showProgress() and _("Show progress while working: on")
+                or _("Show progress while working: off"),
+            callback = function()
+                self.settings:saveSetting("show_progress", not self:showProgress())
+                self.settings:flush()
+                reopen()
+            end,
+        }},
+        {{
+            text = self:pageBreakYou() and _("Your messages start a new page: on")
+                or _("Your messages start a new page: off"),
+            callback = function()
+                self.settings:saveSetting("page_break_you", not self:pageBreakYou())
+                self.settings:flush()
+                reopen()
+            end,
+        }},
+        {{
+            text = self:micMode() and _("Call me: stay on the call")
+                or _("Call me: one call per reply"),
+            callback = function()
+                self.settings:saveSetting("call_microphone", not self:micMode())
+                self.settings:flush()
+                reopen()
+            end,
+        }},
+        {{
+            text = T(_("Bridge address: %1"), (url and url ~= "") and url or _("not set")),
+            callback = function()
+                UIManager:close(dialog)
+                self:editSetting("bridge_url", _("Bridge address"), "http://100.64.0.1:8787", false)
+            end,
+        }},
+        {{
+            text = T(_("Bridge token: %1"), (token and token ~= "") and _("set") or _("not set")),
+            callback = function()
+                UIManager:close(dialog)
+                self:editSetting("bridge_token", _("Bridge token"), "", true)
+            end,
+        }},
+        {{ text = _("Close"), callback = function() UIManager:close(dialog) end }},
+    }
+    -- With OpenAI set up on the bridge: who transcribes calls (after the Call me row).
+    if self:hasOpenAI() then
+        table.insert(rows, 4, {{
+            text = self:transcriber() == "openai" and _("Transcription: OpenAI (live)")
+                or _("Transcription: Twilio"),
+            callback = function()
+                self.settings:saveSetting("call_transcriber",
+                    self:transcriber() == "openai" and "twilio" or "openai")
+                self.settings:flush()
+                reopen()
+            end,
+        }})
+    end
     dialog = ButtonDialog:new{
         title = _("T3 KOde settings"),
-        buttons = {
-            {{
-                text = self:showProgress() and _("Show progress while working: on")
-                    or _("Show progress while working: off"),
-                callback = function()
-                    self.settings:saveSetting("show_progress", not self:showProgress())
-                    self.settings:flush()
-                    reopen()
-                end,
-            }},
-            {{
-                text = self:pageBreakYou() and _("Your messages start a new page: on")
-                    or _("Your messages start a new page: off"),
-                callback = function()
-                    self.settings:saveSetting("page_break_you", not self:pageBreakYou())
-                    self.settings:flush()
-                    reopen()
-                end,
-            }},
-            {{
-                text = T(_("Bridge address: %1"), (url and url ~= "") and url or _("not set")),
-                callback = function()
-                    UIManager:close(dialog)
-                    self:editSetting("bridge_url", _("Bridge address"), "http://100.64.0.1:8787", false)
-                end,
-            }},
-            {{
-                text = T(_("Bridge token: %1"), (token and token ~= "") and _("set") or _("not set")),
-                callback = function()
-                    UIManager:close(dialog)
-                    self:editSetting("bridge_token", _("Bridge token"), "", true)
-                end,
-            }},
-            {{ text = _("Close"), callback = function() UIManager:close(dialog) end }},
-        },
+        buttons = rows,
     }
     UIManager:show(dialog)
 end
@@ -314,6 +359,13 @@ end
 
 local callLabel -- a call's status line (voice replies, below); used by the thread's buttons
 
+--- Two pieces of text with one space between them (either may be nil or blank).
+local function joinWords(a, b)
+    if not a or not a:match("%S") then return b end
+    if not b or not b:match("%S") then return a end
+    return (a:gsub("%s+$", "")) .. " " .. b
+end
+
 -- ---------------------------------------------------------------------------
 -- thread list
 
@@ -347,6 +399,8 @@ end
 
 function T3:listItems(body, project_filter)
     self.voice_on = body.call == true -- the bridge can take a new thread's first message by phone
+    self.transcribers = type(body.transcribers) == "table" and body.transcribers or {}
+    self.default_transcriber = str(body.transcriber)
     local items = {}
     for _i, p in ipairs(body.projects or {}) do
         local header = str(p.title) or _("No project")
@@ -690,34 +744,51 @@ end
 
 function T3:showListActions()
     local dialog
-    dialog = ButtonDialog:new{
-        buttons = {
-            {{ text = _("New thread"), callback = function()
+    -- The microphone (a call that stays up): start it, or hang it up. None when voice
+    -- replies are off.
+    local function micRow()
+        if self.mic then
+            return {{ text = _("Hang up the call"), callback = function()
                 UIManager:close(dialog)
-                self:chooseProject()
-            end }},
-            {{ text = _("Pull requests"), callback = function()
+                self:micHangUp()
+            end }}
+        elseif self.voice_on then
+            return {{ text = _("Call me and stay on"), callback = function()
                 UIManager:close(dialog)
-                self:showPullRequests()
-            end }},
-            {{ text = _("Usage"), callback = function()
-                UIManager:close(dialog)
-                self:showUsage()
-            end }},
-            {{ text = _("Refresh"), callback = function()
-                UIManager:close(dialog)
-                withBusy(_("Refreshing…"), function() self:refreshList(true) end)
-            end }},
-            {{ text = _("Settings"), callback = function()
-                UIManager:close(dialog)
-                self:showSettings()
-            end }},
-            {{ text = _("Reload T3 KOde"), callback = function()
-                UIManager:close(dialog)
-                self:reloadPlugin()
-            end }},
-        },
+                self:startMic()
+            end }}
+        end
+        return nil
+    end
+    local rows = {
+        {{ text = _("New thread"), callback = function()
+            UIManager:close(dialog)
+            self:chooseProject()
+        end }},
+        {{ text = _("Pull requests"), callback = function()
+            UIManager:close(dialog)
+            self:showPullRequests()
+        end }},
+        {{ text = _("Usage"), callback = function()
+            UIManager:close(dialog)
+            self:showUsage()
+        end }},
+        {{ text = _("Refresh"), callback = function()
+            UIManager:close(dialog)
+            withBusy(_("Refreshing…"), function() self:refreshList(true) end)
+        end }},
+        {{ text = _("Settings"), callback = function()
+            UIManager:close(dialog)
+            self:showSettings()
+        end }},
+        {{ text = _("Reload T3 KOde"), callback = function()
+            UIManager:close(dialog)
+            self:reloadPlugin()
+        end }},
     }
+    local mic = micRow()
+    if mic then table.insert(rows, 3, mic) end
+    dialog = ButtonDialog:new{ buttons = rows }
     UIManager:show(dialog)
 end
 
@@ -1341,6 +1412,15 @@ function T3:threadButtons(view)
         table.insert(rows, 1, {
             { text = callLabel(call.state), id = "call_status", callback = function() end }, -- a label
             { text = _("Hang up"), callback = function() call.hang_up() end },
+        })
+    elseif self.mic then
+        -- Always the same three buttons, so new words only relabel the first: the
+        -- thread isn't redrawn and the page you're reading stays put.
+        table.insert(rows, 1, {
+            { text = self:micLabel(view.id), id = "mic_status",
+              callback = function() self:micEdit(view) end },
+            { text = _("Send"), callback = function() self:micSend() end },
+            { text = _("Hang up"), callback = function() self:micHangUp() end },
         })
     end
     return rows
@@ -1976,6 +2056,11 @@ end
 
 --- `initial`: text to start the box with (a spoken reply from Call me).
 function T3:typeReply(view, initial)
+    -- What the microphone collected under this thread goes in first.
+    if self.mic and self.mic.drafts[view.id] then
+        initial = joinWords(self.mic.drafts[view.id], initial)
+        self.mic.drafts[view.id] = nil
+    end
     local typed = str(view.typed) or "message"
     local p = type(view.pending) == "table" and view.pending or nil
     -- The box covers the thread, so its title bar names the thread; a question being
@@ -2001,15 +2086,37 @@ function T3:typeReply(view, initial)
     -- While the agent works, a message waits for the turn to end (Queue, as the app does
     -- by default), or goes into the running turn (Steer).
     local working = typed == "message" and str(view.state) == "working"
+    local extras = {}
+    if plan then table.insert(extras, plan.button) end
+    if self.mic then
+        table.insert(extras, {
+            text = _("Clear"),
+            callback = function()
+                local dialog = self.compose_dialog
+                if dialog then dialog:setInputText("") end
+            end,
+        })
+    end
     self:compose{
         title = str(view.title) or _("Reply"),
         description = question,
         input = initial,
         hint = typed == "answer" and _("Your answer") or _("Message"),
         send_text = working and _("Queue") or _("Send"),
-        extras = { plan and plan.button },
+        -- On the call, this box is the thread's draft: Back returns to reading and keeps
+        -- it (see on_close), Clear empties it. Without a call, Cancel throws it away.
+        cancel_text = self.mic and _("Back") or nil,
+        extras = extras,
         alt = working and { text = _("Steer"), on_send = function(text) send(text, "steer") end } or nil,
         on_send = function(text) send(text, working and "queue" or nil) end,
+        -- With the microphone on, this box is the thread's draft: closing it without
+        -- sending (Cancel) puts what's in it back, edits included, to keep adding to.
+        on_close = function(text, sent)
+            local mic = self.mic
+            if not mic then return end
+            mic.drafts[view.id] = (not sent and text:match("%S")) and text or nil
+            self:micShowStatus()
+        end,
     }
 end
 
@@ -2039,7 +2146,14 @@ end
 --- No box covers the thread meanwhile: the call's status and Hang up sit on top of the
 --- thread's buttons, so you can read and scroll while you talk.
 function T3:callReply(view)
-    self:runCall(function() return self.api:call(view.id) end, {
+    if self:micMode() then
+        -- The microphone: start it. Its words collect under the thread while you read;
+        -- if it's on already, open the box with what it collected.
+        if self.mic then return self:micEdit(view) end
+        self:startMic()
+        return
+    end
+    self:runCall(function() return self.api:call(view.id, self:transcriber()) end, {
         thread = view.id,
         draft = function(text)
             -- Reply to the freshest view of the thread, if it's still the one open.
@@ -2169,6 +2283,203 @@ function T3:runCall(start, on)
 end
 
 -- ---------------------------------------------------------------------------
+-- the microphone: a call that stays up, its words going into the open text box
+
+local MIC_POLL = 1.5 -- seconds between checks for new words
+
+--- The microphone row's first button: the call's state, or the end of the draft for
+--- thread `id` (what was said while reading it, not sent yet).
+function T3:micLabel(id)
+    local mic = self.mic
+    local status = str(mic and mic.status)
+    if status == "ringing" then return _("Ringing your phone…") end
+    if status == "ending" then return _("Hanging up…") end
+    local draft = mic and id and mic.drafts[id]
+    if draft then
+        -- A third of the row is too narrow for the words themselves; tap to read them.
+        local _text, words = draft:gsub("%S+", "")
+        return words == 1 and _("Draft: 1 word") or T(_("Draft: %1 words"), words)
+    end
+    return _("Listening")
+end
+
+--- Show the microphone's status on the thread's row, without redrawing the thread.
+function T3:micShowStatus()
+    local button = self.viewer and self.viewer.button_table
+        and self.viewer.button_table:getButtonById("mic_status")
+    if button then
+        button:setText(self:micLabel(self.view and self.view.id), button.width)
+        UIManager:setDirty(self.viewer, "ui")
+    end
+end
+
+--- Tap the draft: edit it in the reply box (which takes the draft in).
+function T3:micEdit(view)
+    local current = self.view and self.view.id == view.id and self.view or view
+    self:typeReply(current)
+end
+
+--- Redraw the open thread to add or drop the microphone row. Not over an open text
+--- box: then it happens when the box closes (T3:endTyping).
+function T3:micRedrawThread()
+    if self.typing then
+        self.mic_row_stale = true
+    elseif self.view and self.viewer then
+        self:showThread(self.view, { update = true })
+    end
+end
+
+--- Ring the phone and keep the call up. Returns true once it's placed.
+function T3:startMic()
+    if self.mic then return true end
+    local ok, call = withBusy(_("Calling your phone…"), function() return self.api:mic(self:transcriber()) end)
+    if not ok then
+        notify(call)
+        return false
+    end
+    self.mic = { id = call.id, v = call.v, after = 0, status = str(call.status), drafts = {} }
+    self:micRedrawThread()
+    notify(_("Calling you. Once you answer, talk while you read: it collects under the thread. Press 1 or say \"send it\" to send."), 4)
+    self:micSchedule()
+    return true
+end
+
+function T3:micSchedule()
+    if self.mic_poll then UIManager:unschedule(self.mic_poll) end
+    self.mic_poll = function()
+        self.mic_poll = nil
+        self:micPoll()
+    end
+    UIManager:scheduleIn(MIC_POLL, self.mic_poll)
+end
+
+function T3:micPoll()
+    local mic = self.mic
+    if not mic then return end
+    local ok, c, code = self.api:callState(mic.id, mic.v, mic.after)
+    if self.mic ~= mic then return end
+    if not ok then
+        if code == 404 then return self:micEnded(_("The call was lost (the bridge restarted?).")) end
+        return self:micSchedule() -- offline for a moment: keep trying
+    end
+    mic.v = c.v
+    for _i, e in ipairs(type(c.events) == "table" and c.events or {}) do
+        mic.after = math.max(mic.after, tonumber(e.n) or 0)
+        if e.kind == "text" and str(e.text) then
+            self:micText(e.text)
+        elseif e.kind == "send" then
+            self:micSend()
+        elseif e.kind == "clear" then
+            self:micClear()
+        end
+        if self.mic ~= mic then return end
+    end
+    local status = str(c.status)
+    if status ~= mic.status then
+        mic.status = status
+        if status == "ringing" or status == "listening" or status == "ending" then
+            self:micShowStatus()
+        elseif status == "no-answer" then
+            return self:micEnded(_("Your phone didn't answer."))
+        elseif status == "failed" then
+            return self:micEnded(T(_("The call didn't go through: %1"), str(c.error) or _("no reason given")))
+        else
+            return self:micEnded(_("Call ended."))
+        end
+    end
+    self:micSchedule()
+end
+
+--- Words heard: into the open text box if there is one. Otherwise into the draft of the
+--- thread on screen, shown under it, so you can keep reading (nothing covers the
+--- thread); on the thread list, kept for the next box or thread you open.
+function T3:micText(text)
+    local dialog = self.compose_dialog
+    if dialog then
+        local current = dialog:getInputText()
+        dialog:addTextToInput((current:match("%S$") and " " or "") .. text)
+        return
+    end
+    local mic = self.mic
+    local view = self.viewer and self.view
+    if view then
+        mic.drafts[view.id] = joinWords(joinWords(mic.pending, mic.drafts[view.id]), text)
+        mic.pending = nil
+        self:micShowStatus()
+    else
+        mic.pending = joinWords(mic.pending, text)
+        notify(T(_("Heard: “%1”. It goes to the next thread or text box you open."), mic.pending), 3)
+    end
+end
+
+--- 1 on the phone, "send it", or the row's Send: send the open box, or else the draft
+--- of the thread on screen.
+function T3:micSend()
+    if self.compose_send then return self.compose_send() end
+    local mic = self.mic
+    local view = self.viewer and self.view
+    local text = view and joinWords(mic.pending, mic.drafts[view.id])
+    if not (text and text:match("%S")) then
+        return notify(_("Nothing to send yet."), 2)
+    end
+    mic.drafts[view.id], mic.pending = nil, nil
+    -- As the reply box would: queued for after the turn while the agent works.
+    local working = str(view.typed) ~= "answer" and str(view.state) == "working"
+    local ok, result = withBusy(_("Sending…"), function()
+        return self.api:reply(view.id, nil, text, self:showProgress(), self:expandList(view.id), nil,
+            working and "queue" or nil)
+    end)
+    if ok then
+        self:showThread(result, { update = true, page = math.huge })
+    else
+        mic.drafts[view.id] = text -- keep it to try again
+        self:micShowStatus()
+        notify(result)
+    end
+end
+
+--- 9 on the phone: clear the open box, or the draft of the thread on screen.
+function T3:micClear()
+    local dialog = self.compose_dialog
+    if dialog then
+        dialog:setInputText("")
+    elseif self.view then
+        self.mic.drafts[self.view.id] = nil
+        self:micShowStatus()
+    end
+    self.mic.pending = nil
+end
+
+function T3:micHangUp()
+    local mic = self.mic
+    if not mic then return end
+    local ok, c = self.api:callCancel(mic.id)
+    if not ok then return self:micEnded(_("Call ended.")) end
+    -- "ending": its last words are on the way; the poll puts them in, then sees it end.
+    mic.status = str(c.status)
+    if mic.status ~= "ending" then return self:micEnded(_("Call ended.")) end
+    self:micShowStatus()
+end
+
+function T3:micEnded(message)
+    if self.mic_poll then UIManager:unschedule(self.mic_poll) end
+    self.mic_poll = nil
+    local mic = self.mic
+    self.mic = nil
+    local view = self.viewer and self.view
+    -- The draft of the thread on screen opens in the reply box, to check and send.
+    local draft = mic and view and joinWords(mic.pending, mic.drafts[view.id])
+    if draft then mic.drafts[view.id], mic.pending = nil, nil end
+    local others = {}
+    for _id, d in pairs(mic and mic.drafts or {}) do table.insert(others, d) end
+    if mic and mic.pending then table.insert(others, mic.pending) end
+    if #others > 0 then message = message .. "\n" .. T(_("Not used: “%1”"), table.concat(others, " / ")) end
+    notify(message, #others > 0 and 10 or 3)
+    self:micRedrawThread()
+    if draft and not self.typing then self:typeReply(view, draft) end
+end
+
+-- ---------------------------------------------------------------------------
 -- models
 
 --- Choose a model. `params`: {thread = id} or {project = id}, for the current model.
@@ -2216,7 +2527,7 @@ function T3:pickModel(params, on_pick)
     UIManager:show(dialog)
 end
 
---- Every model that isn't a favorite, under its provider's name.
+--- Every model, favorites included, under its provider's name.
 function T3:showAllModels(groups, mark, on_pick)
     local menu
     local items = {}
@@ -2355,7 +2666,7 @@ function T3:compose(o)
     local dialog
     -- Cancel, optional extra buttons (o.extras), then Send.
     local row = {
-        { text = _("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
+        { text = o.cancel_text or _("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
     }
     for _i, b in ipairs(o.extras or {}) do table.insert(row, b) end
     -- o.alt: a second way to send ({text, on_send}), left of the main one.
@@ -2382,10 +2693,16 @@ function T3:compose(o)
             o.on_send(text)
         end,
     })
+    -- Words the microphone heard while no box was open go in first.
+    local input = o.input or ""
+    if self.mic and self.mic.pending then
+        input = (input:match("%S") and input:gsub("%s+$", "") .. " " or "") .. self.mic.pending
+        self.mic.pending = nil
+    end
     dialog = InputDialog:new{
         title = o.title,
         description = o.description,
-        input = o.input or "",
+        input = input,
         input_hint = o.hint,
         allow_newline = not o.one_line,
         width = Device.screen:getWidth(),
@@ -2393,11 +2710,24 @@ function T3:compose(o)
         buttons = { row },
     }
     dialog.onCloseWidget = function(d)
+        -- o.on_close(text, sent): the box is closing, sent or not, with this text in it.
+        if o.on_close then o.on_close(d:getInputText(), d._t3_sent) end
         InputDialog.onCloseWidget(d)
-        if self.compose_dialog == d then self.compose_dialog = nil end
+        if self.compose_dialog == d then
+            self.compose_dialog = nil
+            self.compose_send = nil
+        end
         self:endTyping(d._t3_sent)
     end
     self.compose_dialog = dialog
+    -- What the box's main button does, for the microphone's "send" (1 or "send it").
+    self.compose_send = function()
+        local text = dialog:getInputText()
+        if not text:match("%S") then return end
+        dialog._t3_sent = true
+        UIManager:close(dialog)
+        o.on_send(text)
+    end
     self.typing = true
     UIManager:show(dialog)
     dialog:onShowKeyboard()
@@ -2410,6 +2740,17 @@ function T3:endTyping(sent)
     self.typing = false
     local held = self.held_view
     self.held_view = nil
+    if self.mic_row_stale then
+        -- The microphone started or stopped while the box was open: show its row as it is now.
+        self.mic_row_stale = nil
+        if not sent and not held then
+            UIManager:nextTick(function()
+                if self.view and self.viewer and not self.typing then
+                    self:showThread(self.view, { update = true })
+                end
+            end)
+        end
+    end
     if sent or not held then return end
     UIManager:nextTick(function()
         if self.view and held.id == self.view.id and not self.typing then
@@ -2513,13 +2854,18 @@ function T3:newThread(project, state)
     local extras = { extra, plan.button }
     if self.voice_on then
         table.insert(extras, {
-            text = _("Call me"),
+            text = self.mic and _("On call") or _("Call me"),
             callback = function()
+                if self:micMode() or self.mic then
+                    -- The microphone: its words go into this box, which stays open.
+                    if not self.mic then self:startMic() end
+                    return
+                end
                 local dialog = self.compose_dialog
                 local typed = dialog and dialog:getInputText() or ""
                 if dialog then UIManager:close(dialog) end
                 local mode = plan.on and "plan" or nil
-                self:runCall(function() return self.api:callNew(project.id, model, mode) end, {
+                self:runCall(function() return self.api:callNew(project.id, model, mode, self:transcriber()) end, {
                     draft = function(text)
                         -- Anything typed before the call stays, with the spoken text after it.
                         if typed:match("%S") then text = typed:gsub("%s+$", "") .. " " .. text end

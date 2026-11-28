@@ -296,30 +296,42 @@ class _DemoTwilio:
     webhooks a real call uses, and hangs up so the text lands on the device as a draft."""
 
     SPEECH = ["Looks good.", "Open the pull request and ask for a review from the auth team."]
+    # A microphone call: a few phrases (one sent with "send it"), then it stays up,
+    # silent, until hung up from the device.
+    MIC_SPEECH = ["Looks good.", "Open the pull request, send it.", "Then start on the changelog."]
 
     def __init__(self):
         self.voice = None
+        self.hooks = {}  # sid -> hook, for hang_up
 
     def call(self, to, from_, url, status_url):
         sid = "CA" + uuid.uuid4().hex
         cid = url.rsplit("id=", 1)[1]
+        hook = lambda action, **form: self.voice.webhook(action, cid, {"CallSid": sid, **form})
+        self.hooks[sid] = hook
 
         def go():
-            hook = lambda action, **form: self.voice.webhook(action, cid, {"CallSid": sid, **form})
             time.sleep(3)
             if hook("answer") is None:
                 return
-            for text in self.SPEECH:
+            mic = self.voice.calls[cid]["mic"]
+            for text in self.MIC_SPEECH if mic else self.SPEECH:
                 time.sleep(3)
                 hook("gather", SpeechResult=text)
-            time.sleep(2)
-            hook("status", CallStatus="completed")
+            if not mic:
+                time.sleep(2)
+                hook("status", CallStatus="completed")
 
         threading.Thread(target=go, daemon=True).start()
         return sid
 
-    def hang_up(self, sid):
+    def redirect(self, sid, xml):
         pass
+
+    def hang_up(self, sid):
+        hook = self.hooks.pop(sid, None)
+        if hook:
+            threading.Timer(0.5, lambda: hook("status", CallStatus="completed")).start()
 
 
 def demo_voice(bridge):

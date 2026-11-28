@@ -112,7 +112,9 @@ Same body as the list, plus `"changed": true|false`.
 
 `{"projects": [{"id", "title"}], "call": true|false}`, for choosing where a new thread goes.
 `call`: whether `POST /v1/projects/<id>/call` works (voice replies are set up). The
-thread list (`GET /v1/threads`) has the same `call` field.
+thread list (`GET /v1/threads`) has the same `call` field, and `transcribers`: which
+transcription calls can use (`["twilio"]`, or `["twilio", "openai"]`), and `transcriber`:
+the one a call gets when the device doesn't say (`openai` when it's set up).
 
 ### `GET /v1/models?thread=<id>` or `?project=<id>`
 
@@ -412,6 +414,11 @@ isn't running, 502 if T3 can't list devices or take the screenshot.
 Ring the user's phone (Twilio) to take a spoken reply for this thread. Not idempotent:
 each request places a call, so don't retry it. 404 when voice replies are off.
 
+Body (optional): `{"transcriber": "twilio" | "openai"}`: who turns the speech into text
+(the same for `POST /v1/projects/<id>/call` and `POST /v1/mic`). Left out, the bridge's
+default. `openai` needs the bridge's `VOICE_OPENAI_API_KEY` (400 otherwise); the thread
+list's `transcribers` says which are available.
+
 ```json
 {"id": "9f2c4a…", "thread": "a1b2c3d4", "status": "ringing", "text": "", "parts": 0,
  "error": null, "v": 1}
@@ -421,8 +428,8 @@ each request places a call, so don't retry it. 404 when voice replies are off.
 device), then ends in one of:
 - `draft`: the call ended with something said. Put `text` in the reply box to check and
   send. `error` is set if pressing 1 on the phone couldn't send it.
-- `sent`: the user pressed 1 and the bridge sent `text` as a typed reply (queued if a
-  turn is running).
+- `sent`: the user pressed 1 (or ended with "send it") and the bridge sent `text` as a
+  typed reply (queued if a turn is running).
 - `empty`: nothing was said; `no-answer`; `failed` (`error` says why); `cancelled`.
 
 `text` is everything heard so far, and `parts` how many stretches of speech it came in.
@@ -434,9 +441,29 @@ The same, for the first message of a new thread in this project. Body:
 Pressing 1 starts the thread; the call's `thread` is then the new thread's id. The call
 also has `"project": "<id>"` (null for a reply call).
 
-### `GET /v1/calls/<call id>/wait?v=<v>&timeout=55`
+### `POST /v1/mic`
+
+Ring the phone for a microphone call: it stays up until hung up (or 15 minutes of
+silence), and what's said goes to the device as events rather than to a thread. Same
+body as a reply call, plus `"mic": true` and `"events"`:
+
+```json
+{"events": [{"n": 1, "kind": "text", "text": "Looks good."}, {"n": 2, "kind": "send"}]}
+```
+
+- `text`: a phrase, for the open text box.
+- `send`: 1 on the phone, or a phrase ending in "send it" (the words before it come as a
+  `text` event first). The device presses the open box's Send.
+- `clear`: 9 on the phone. The device empties the open box.
+
+A microphone call ends as `ended` (or `no-answer`, `failed`, `cancelled`). Hanging it up
+from the device goes `ending` first, as for a reply call; its last phrase still arrives
+as an event.
+
+### `GET /v1/calls/<call id>/wait?v=<v>&timeout=55&after=<n>`
 
 The call as above, once its `v` differs from the one given (or after `timeout`).
+`after`: for a microphone call, only the events numbered above `n`.
 
 ### `POST /v1/calls/<call id>/cancel`
 

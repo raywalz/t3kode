@@ -300,20 +300,31 @@ end
 
 --- Have the bridge ring your phone to take a spoken reply for thread `id`.
 --- Not retried: a retry would ring you twice. Returns the call: { id, status, text, parts, v }.
-function Api:call(id)
-    return self:request("POST", "/v1/threads/" .. id .. "/call", nil, {})
+--- `transcriber`: "twilio" or "openai"; nil for the bridge's default.
+function Api:call(id, transcriber)
+    return self:request("POST", "/v1/threads/" .. id .. "/call", nil, { transcriber = transcriber })
 end
 
 --- Like Api:call, for the first message of a new thread in project `id`. Pressing 1
 --- starts it with `model` and `mode` (as Api:startThread); the call's `thread` is then its id.
-function Api:callNew(id, model, mode)
-    return self:request("POST", "/v1/projects/" .. id .. "/call", nil, { model = model, mode = mode })
+function Api:callNew(id, model, mode, transcriber)
+    return self:request("POST", "/v1/projects/" .. id .. "/call", nil,
+        { model = model, mode = mode, transcriber = transcriber })
 end
 
 --- The call's state now (no waiting). `status`: ringing, listening, sending, then
 --- draft, sent, empty, no-answer, failed or cancelled.
-function Api:callState(call_id, v)
-    return self:request("GET", "/v1/calls/" .. call_id .. "/wait", { v = v, timeout = 0 }, nil, { 4, 8 })
+--- `after`: for a microphone call, only the events numbered above it.
+function Api:callState(call_id, v, after)
+    return self:request("GET", "/v1/calls/" .. call_id .. "/wait", { v = v, timeout = 0, after = after },
+        nil, { 4, 8 })
+end
+
+--- Ring your phone and keep the call up as a microphone: each phrase comes back as a
+--- "text" event (Api:callState), 1 or "send it" as "send", 9 as "clear".
+--- Not retried: a retry would ring you twice.
+function Api:mic(transcriber)
+    return self:request("POST", "/v1/mic", nil, { transcriber = transcriber })
 end
 
 function Api:callCancel(call_id)

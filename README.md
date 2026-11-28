@@ -224,9 +224,31 @@ thread you're replying to, and then you talk. Pauses are fine. On the phone:
 
 - **1** sends what you said to the thread.
 - **Hang up** (on the phone or the e-reader, or press **#**) puts it in the reply box on the e-reader to check and send.
+- Ending with "**send it**" works like pressing 1.
 - **9** clears it and starts over.
 
-Twilio's speech recognition does the transcribing. You need:
+**Staying on the call.** In Settings, switch **Call me** to *stay on the call*. Then the
+call stays up, and the phone works like a microphone for the e-reader, so you can think out
+loud while you read: a few seconds after each pause, what you said is added to a draft for
+the thread on screen. Under it, the call's row says **Listening** (or "Draft: 12 words"),
+next to **Send** and **Hang up**. Nothing covers the thread, so you keep reading and
+turning pages, with gaps as long as you like. Tap the draft to see it in the reply box:
+**Back** returns to reading and keeps it (with any edits), **Clear** empties it. **1** on
+the phone, ending with "send it", or **Send** sends it; **9** clears it. Then go on to the
+next thread without hanging up. With a text box open (a reply, or a new thread), the words
+go straight into it. Hang up on the phone, with **Hang up** under the thread, or from the
+list's menu (which can also start the call); a draft left over opens in the reply box.
+After 15 minutes of silence it hangs up by itself.
+
+**OpenAI live transcription (recommended).** With `VOICE_OPENAI_API_KEY` set, OpenAI's
+`gpt-live-transcribe` does the transcribing: Twilio streams the call's audio to the bridge
+(a WebSocket on the same public address), and the bridge passes the speech on to OpenAI.
+It's faster and more accurate than Twilio's own speech recognition, nothing falls between
+phrases, and silence isn't sent, so long pauses cost nothing (about 1.7¢ a minute of
+speech). Without a key, Twilio's recognition does it, a phrase at a time. Settings on the
+e-reader can switch between the two.
+
+You need:
 
 1. A Twilio account out of trial, with a voice-capable phone number (`TWILIO_NUMBER`)
    and a Standard API key (`TWILIO_API_KEY` and `TWILIO_API_SECRET`, with

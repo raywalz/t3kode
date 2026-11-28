@@ -71,6 +71,10 @@ class Config:
     voice_port: int = 8791
     voice_speech_model: str = "deepgram_nova-3"
     voice_language: str = "en-US"
+    # Optional: transcribe calls with OpenAI's live transcription instead of Twilio's.
+    voice_openai_api_key: str = ""
+    voice_openai_model: str = "gpt-live-transcribe"
+    voice_transcriber: str = ""  # the default: openai when its key is set; a device can pick per call
 
     @property
     def voice_enabled(self) -> bool:
@@ -100,6 +104,9 @@ class Config:
             voice_port=int(env.get("VOICE_PORT", "8791")),
             voice_speech_model=env.get("VOICE_SPEECH_MODEL", "") or "deepgram_nova-3",
             voice_language=env.get("VOICE_LANGUAGE", "") or "en-US",
+            voice_openai_api_key=env.get("VOICE_OPENAI_API_KEY", "").strip(),
+            voice_openai_model=env.get("VOICE_OPENAI_MODEL", "") or "gpt-live-transcribe",
+            voice_transcriber=env.get("VOICE_TRANSCRIBER", "").strip().lower(),
             **{field: env.get(name, "").strip() for name, field in VOICE_REQUIRED.items()},
         )
         if not cfg.device_token and not cfg.listens_on_loopback_only:
@@ -123,6 +130,10 @@ class Config:
         for name in ("TWILIO_NUMBER", "VOICE_MY_NUMBER"):
             if not getattr(self, VOICE_REQUIRED[name]).startswith("+"):
                 raise SystemExit(f"{name} must be in +<country code><number> form, e.g. +15555550123.")
+        if self.voice_transcriber not in ("", "twilio", "openai"):
+            raise SystemExit("VOICE_TRANSCRIBER is `twilio` or `openai`.")
+        if self.voice_transcriber == "openai" and not self.voice_openai_api_key:
+            raise SystemExit("VOICE_TRANSCRIBER=openai needs VOICE_OPENAI_API_KEY.")
         if len(self.voice_webhook_secret) < 16:
             raise SystemExit("VOICE_WEBHOOK_SECRET is too short; see .env.example for how to make one.")
 

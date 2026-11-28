@@ -1,5 +1,10 @@
 """Voice replies by phone call, through Twilio.
 
+Two kinds of call. A reply call takes one message for one thread (or a new thread)
+and ends. A microphone call (POST /v1/mic) stays up: each phrase you say becomes a
+"text" event the device puts into whatever text box is open, and 1 on the phone (or
+ending a phrase with "send it") a "send" event, until you hang up.
+
 The device asks for a call (POST /v1/threads/<id>/call, or /v1/projects/<id>/call for a
 new thread's first message). Twilio rings your phone, you
 talk, and Twilio's speech recognition turns it into text. Press 1 to send it, or hang
@@ -15,6 +20,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import secrets
 import threading
 import time
@@ -39,11 +45,24 @@ SPEECH_PAUSE = 5
 # of silence), it hangs up and leaves what was said as a draft.
 LISTEN_SECONDS = 30
 QUIET_LIMIT = 6
-KEEP_CALLS = 3600.0  # forget calls this many seconds after they started
+# A microphone call stays up through silence for about 15 minutes (30 × 30 s).
+MIC_QUIET_LIMIT = 30
+KEEP_CALLS = 6 * 3600.0  # forget calls this many seconds after they started
 LIVE = ("ringing", "listening", "ending", "sending")
 # All the call says before you talk; the e-reader shows the keys. It never talks over you.
 GO = "Go ahead."
 HELP = "Press 1 to send. Hang up or press pound to finish on your e-reader. Press 9 to start over."
+
+
+_SEND_IT = re.compile(r"^(.*?)[\s,.;:!?-]*\bsend it\W*$", re.I | re.S)
+
+
+def split_send(speech: str) -> tuple[str, bool]:
+    """A phrase ending in "send it" means send: return (the words before it, True)."""
+    m = _SEND_IT.match(speech.strip())
+    if m:
+        return m.group(1).strip(), True
+    return speech.strip(), False
 
 
 class TwilioError(Exception):
@@ -84,6 +103,10 @@ class Twilio:
     def hang_up(self, sid: str) -> None:
         self.post(f"Calls/{sid}.json", {"Status": "completed"})
 
+    def redirect(self, sid: str, xml: str) -> None:
+        """Give a call in progress new TwiML (to say something, or hang up)."""
+        self.post(f"Calls/{sid}.json", {"Twiml": xml})
+
 
 def twiml(*parts: str) -> str:
     return '<?xml version="1.0" encoding="UTF-8"?><Response>' + "".join(parts) + "</Response>"
@@ -101,7 +124,17 @@ class Voice:
     ending_wait = 6.0
 
     def __init__(self, bridge, twilio, *, my_number: str, from_number: str, public_url: str,
-                 secret: str, speech_model: str = "deepgram_nova-3", language: str = "en-US"):
+                 secret: str, speech_model: str = "deepgram_nova-3", language: str = "en-US",
+                 openai_key: str = "", openai_model: str = "gpt-live-transcribe",
+                 transcriber: str = "", live_session=None):
+        # Transcription: "twilio" (Twilio's own speech recognition, phrase by phrase) or
+        # "openai" (the call's audio streamed to OpenAI live; see live.py). A device can
+        # ask for either per call. The default: OpenAI when its key is set (it's faster and
+        # more accurate), unless `transcriber` says "twilio".
+        self.openai_key = openai_key
+        self.openai_model = openai_model
+        self.transcriber = "openai" if openai_key and transcriber != "twilio" else "twilio"
+        self.live_session = live_session  # for tests: makes a live.LiveSession-like object
         self.bridge = bridge
         self.twilio = twilio
         self.my_number = my_number
@@ -115,13 +148,32 @@ class Voice:
 
     # ---- device side ------------------------------------------------------------
 
-    def start(self, short: str) -> dict:
+    @property
+    def transcribers(self) -> list[str]:
+        return ["twilio", "openai"] if self.openai_key else ["twilio"]
+
+    def _transcriber(self, asked: str | None) -> str:
+        if asked in (None, ""):
+            return self.transcriber
+        if asked not in ("twilio", "openai"):
+            raise BridgeError(400, "transcriber is `twilio` or `openai`")
+        if asked not in self.transcribers:
+            raise BridgeError(400, "OpenAI transcription isn't set up on the bridge (VOICE_OPENAI_API_KEY)")
+        return asked
+
+    def start(self, short: str, transcriber: str | None = None) -> dict:
         """Ring the phone for a reply to thread `short`."""
         self.bridge._thread(short)  # 404 for an unknown thread
-        return self._place({"thread": short, "project": None,
-                            "intro": GO})
+        return self._place({"thread": short, "project": None, "intro": GO,
+                            "transcriber": self._transcriber(transcriber)})
 
-    def start_new(self, project: str, model: str | None = None, mode: str | None = None) -> dict:
+    def start_mic(self, transcriber: str | None = None) -> dict:
+        """Ring the phone and keep the call up as a microphone for the device."""
+        return self._place({"thread": None, "project": None, "mic": True, "intro": "Listening.",
+                            "transcriber": self._transcriber(transcriber)})
+
+    def start_new(self, project: str, model: str | None = None, mode: str | None = None,
+                  transcriber: str | None = None) -> dict:
         """Ring the phone for the first message of a new thread in `project`. Pressing 1
         starts the thread with `model` and `mode` (as POST /v1/threads takes them)."""
         pid = self.bridge.by_short.get(project)
@@ -131,12 +183,14 @@ class Voice:
         if mode not in (None, "default", "plan"):
             raise BridgeError(400, "mode is `plan` or `default`")
         return self._place({"thread": None, "project": project, "model": model, "mode": mode,
-                            "intro": f"New thread. {GO}"})
+                            "intro": f"New thread. {GO}", "transcriber": self._transcriber(transcriber)})
 
     def _place(self, call: dict) -> dict:
         cid = secrets.token_hex(8)
         call.update({"id": cid, "sid": None, "status": "ringing", "segments": [], "error": None, "v": 1,
-                     "started": time.monotonic(), "quiet": 0})
+                     "started": time.monotonic(), "quiet": 0, "events": []})
+        call.setdefault("mic", False)
+        call.setdefault("transcriber", self.transcriber)
         with self.cond:
             now = time.monotonic()
             for old in [k for k, c in self.calls.items() if now - c["started"] > KEEP_CALLS]:
@@ -155,8 +209,9 @@ class Voice:
                 call["sid"] = sid
             return self._public(call)
 
-    def wait(self, cid: str, v: int, timeout: float) -> dict:
-        """The call's state once it differs from version `v` (or after `timeout`)."""
+    def wait(self, cid: str, v: int, timeout: float, after: int = 0) -> dict:
+        """The call's state once it differs from version `v` (or after `timeout`).
+        `after`: for a microphone call, return only the events numbered above it."""
         deadline = time.monotonic() + timeout
         with self.cond:
             call = self._call(cid)
@@ -165,7 +220,7 @@ class Voice:
                 if left <= 0:
                     break
                 self.cond.wait(left)
-            return self._public(call)
+            return self._public(call, after)
 
     def cancel(self, cid: str) -> dict:
         """Hang up from the device. Like hanging up the phone: what was said is kept as a
@@ -193,7 +248,7 @@ class Voice:
         def finish():
             with self.cond:
                 if call["status"] == "ending":
-                    self._set(call, "draft" if self._text(call) else "empty")
+                    self._set(call, self._final(call))
         timer = threading.Timer(delay, finish)
         timer.daemon = True
         timer.start()
@@ -208,11 +263,26 @@ class Voice:
     def _text(call: dict) -> str:
         return " ".join(s for s in call["segments"] if s).strip()
 
-    def _public(self, call: dict) -> dict:
-        return {"id": call["id"], "thread": call["thread"], "project": call["project"],
+    def _final(self, call: dict) -> str:
+        """How a call ends when it simply stops: a microphone call `ended`, a reply call
+        as a `draft` of what was said (or `empty`)."""
+        if call["mic"]:
+            return "ended"
+        return "draft" if self._text(call) else "empty"
+
+    def _event(self, call: dict, kind: str, text: str | None = None) -> None:
+        n = call["events"][-1]["n"] + 1 if call["events"] else 1
+        call["events"].append({"n": n, "kind": kind, **({"text": text} if text else {})})
+        del call["events"][:-200]  # a device that fell that far behind starts over
+
+    def _public(self, call: dict, after: int = 0) -> dict:
+        body = {"id": call["id"], "thread": call["thread"], "project": call["project"],
                 "status": call["status"],
                 "text": self._text(call), "parts": len(call["segments"]), "error": call["error"],
-                "v": call["v"]}
+                "v": call["v"], "mic": call["mic"]}
+        if call["mic"]:
+            body["events"] = [e for e in call["events"] if e["n"] > after]
+        return body
 
     def _set(self, call: dict, status: str | None = None, error: str | None = None) -> None:
         """Change a call (with self.cond held) and wake its waiters."""
@@ -227,6 +297,16 @@ class Voice:
 
     def _hook(self, action: str, cid: str) -> str:
         return f"{self.public_url}/voice/{self.secret}/{action}?id={cid}"
+
+    def _listen(self, call: dict, prompt: str = "") -> str:
+        """TwiML to say `prompt` (if any) and listen: Twilio's Gather, or the call's audio
+        streamed to the bridge for OpenAI to transcribe."""
+        if call["transcriber"] != "openai":
+            return self._gather(call["id"], prompt)
+        url = "wss://" + self.public_url.split("://", 1)[1] + f"/voice/{self.secret}/stream"
+        # Twilio drops a query string from a stream URL: the call id goes as a parameter.
+        return ((say(prompt) if prompt else "") + f"<Connect><Stream url={quoteattr(url)}>"
+                f"<Parameter name=\"call\" value={quoteattr(call['id'])}/></Stream></Connect>")
 
     def _gather(self, cid: str, prompt: str = "") -> str:
         """Listen for speech or a key. A key press cuts the prompt short."""
@@ -254,43 +334,52 @@ class Voice:
                 self._status(call, form.get("CallStatus", ""))
                 return ""
             if call["status"] == "ending":  # hung up from the device: keep its last words
-                speech = (form.get("SpeechResult") or "").strip()
+                speech, _send = split_send(form.get("SpeechResult") or "")
                 if action == "gather" and speech:
-                    call["segments"].append(speech)
+                    if call["mic"]:
+                        self._event(call, "text", speech)
+                    else:
+                        call["segments"].append(speech)
                     self._set(call)
                 return twiml("<Hangup/>")
             if call["status"] not in ("ringing", "listening"):
                 return twiml(say("This call is over. Bye."), "<Hangup/>")
             if action == "answer":
                 self._set(call, "listening")
-                return twiml(self._gather(cid, call["intro"]))
-            digits, speech = form.get("Digits", ""), (form.get("SpeechResult") or "").strip()
-            if speech:
-                call["segments"].append(speech)
+                return twiml(self._listen(call, call["intro"]))
+            if call["mic"]:
+                return self._mic(call, form)
+            digits = form.get("Digits", "")
+            speech, send = split_send(form.get("SpeechResult") or "")
+            if speech or send:
                 call["quiet"] = 0
-                self._set(call)
-                return twiml(self._gather(cid))  # keep listening, without a word
+                if speech:
+                    call["segments"].append(speech)
+                    self._set(call)
+                if not send:
+                    return twiml(self._listen(call))  # keep listening, without a word
+                digits = "1"  # "… send it": as pressing 1
             if digits == "1":
                 text = self._text(call)
                 if not text:
-                    return twiml(self._gather(cid, "Nothing to send yet. Go ahead."))
+                    return twiml(self._listen(call, "Nothing to send yet. Go ahead."))
                 self._set(call, "sending")
             elif digits == "#":
-                self._set(call, "draft" if self._text(call) else "empty")
+                self._set(call, self._final(call))
                 return twiml(say("Okay, it's on your e-reader. Bye." if self._text(call) else "Okay. Bye."),
                              "<Hangup/>")
             elif digits == "9":
                 call["segments"].clear()
                 self._set(call)
-                return twiml(self._gather(cid, "Cleared. Start again."))
+                return twiml(self._listen(call, "Cleared. Start again."))
             elif digits:
-                return twiml(self._gather(cid, HELP))
+                return twiml(self._listen(call, HELP))
             else:  # silence
                 call["quiet"] += 1
                 if call["quiet"] >= QUIET_LIMIT:
-                    self._set(call, "draft" if self._text(call) else "empty")
+                    self._set(call, self._final(call))
                     return twiml(say("I'll leave it on your e-reader. Bye."), "<Hangup/>")
-                return twiml(self._gather(cid))  # thinking is fine: listen again, silently
+                return twiml(self._listen(call))  # thinking is fine: listen again, silently
             target = dict(call)
         # Sending waits on T3 (a second or two), so not under the lock.
         try:
@@ -310,19 +399,145 @@ class Voice:
             self._set(call, "sent")
         return twiml(say("Started. Bye." if target["project"] else "Sent. Bye."), "<Hangup/>")
 
+    def _mic(self, call: dict, form: dict) -> str:
+        """A microphone call's phrase or key (self.cond held): it becomes an event for the
+        device. The call never answers back; it just listens again."""
+        digits = form.get("Digits", "")
+        speech, send = split_send(form.get("SpeechResult") or "")
+        if speech or send or digits:
+            call["quiet"] = 0
+        if speech:
+            self._event(call, "text", speech)
+        if send or digits == "1":
+            self._event(call, "send")
+        elif digits == "9":
+            self._event(call, "clear")
+        if speech or send or digits in ("1", "9"):
+            self._set(call)
+        elif not digits:  # silence
+            call["quiet"] += 1
+            if call["quiet"] >= MIC_QUIET_LIMIT:
+                self._set(call, "ended")
+                return twiml(say("Hanging up. Bye."), "<Hangup/>")
+        return twiml(self._listen(call))
+
+    # ---- OpenAI live transcription: Twilio streams the call's audio here ----------
+
+    def stream(self, sock) -> None:
+        """Serve one Twilio media stream (a WebSocket) until it stops. Each phrase OpenAI
+        transcribes, each key pressed, and each 30 s of silence goes through webhook()
+        as a Gather result would; when that wants to speak or hang up, the call is
+        redirected to its TwiML."""
+        session = cid = sid = None
+        quiet_since = time.monotonic()
+        try:
+            while True:
+                try:
+                    message = json.loads(sock.recv())
+                except ValueError:
+                    continue
+                event = message.get("event")
+                if event == "start":
+                    start = message.get("start") or {}
+                    cid = (start.get("customParameters") or {}).get("call", "")
+                    sid = start.get("callSid", "")
+                    with self.cond:
+                        call = self.calls.get(cid)
+                        if call is None or call["sid"] != sid or call["transcriber"] != "openai":
+                            log.warning("a media stream for no call of ours")
+                            return
+                    session = self._live(cid, sid)
+                    try:
+                        session.start()
+                    except Exception as e:
+                        log.warning("couldn't reach OpenAI (%s): Twilio transcribes this call", e)
+                        session = None
+                        self._fall_back(cid, sid)
+                        return
+                elif event == "media" and session:
+                    media = message.get("media") or {}
+                    if media.get("track", "inbound") != "inbound":
+                        continue
+                    session.feed(base64.b64decode(media.get("payload") or ""))
+                    now = time.monotonic()
+                    if session.speaking:
+                        quiet_since = now
+                    elif now - max(quiet_since, session.last_speech) >= LISTEN_SECONDS:
+                        quiet_since = now
+                        self._stream_event(cid, sid, {})  # as a Gather timing out
+                elif event == "dtmf" and session:
+                    quiet_since = time.monotonic()
+                    self._stream_event(cid, sid, {"Digits": (message.get("dtmf") or {}).get("digit", "")})
+                elif event == "stop":
+                    break
+        except Exception as e:  # the stream ended (hung up, or redirected)
+            if isinstance(e, OSError) or type(e).__name__ == "WebSocketClosed":
+                log.info("media stream closed (%s)", e)
+            else:
+                log.exception("media stream failed")
+        finally:
+            if session:
+                session.finish()  # the last phrase still comes through, if it was cut off
+            with self.cond:  # the call ended while its last words were on their way: done now
+                call = self.calls.get(cid or "")
+                if call and call["status"] == "ending":
+                    self._set(call, self._final(call))
+
+    def _fall_back(self, cid: str, sid: str) -> None:
+        """OpenAI is out of reach: carry on with Twilio's speech recognition instead."""
+        with self.cond:
+            call = self.calls.get(cid)
+            if call is None or call["status"] != "listening":
+                return
+            call["transcriber"] = "twilio"
+            xml = twiml(self._listen(call, "OpenAI isn't working, so Twilio is listening instead."))
+        try:
+            self.twilio.redirect(sid, xml)
+        except Exception as e:
+            log.warning("couldn't switch the call to Twilio: %s", e)
+
+    def _live(self, cid: str, sid: str):
+        on_text = lambda text: self._stream_event(cid, sid, {"SpeechResult": text})
+        if self.live_session:
+            return self.live_session(on_text)
+        from .live import LiveSession
+        return LiveSession(self.openai_key, self.openai_model, on_text,
+                           language=self.language.split("-")[0].lower())
+
+    def _stream_event(self, cid: str, sid: str, form: dict) -> None:
+        with self.cond:
+            call = self.calls.get(cid)
+            ended = call is None or call["status"] == "ending"  # hung up: nothing to redirect
+        try:
+            xml = self.webhook("gather", cid, {"CallSid": sid, **form})
+            if ended:
+                return
+            if xml and ("<Say" in xml or "<Hangup" in xml):
+                self.twilio.redirect(sid, xml)
+        except Exception:
+            log.exception("handling a streamed phrase failed")
+
     def _status(self, call: dict, result: str) -> None:
         if call["status"] == "ending":
             if result in ("completed", "failed", "canceled", "no-answer", "busy"):
-                self._finish_later(call, self.late_wait)  # its last words may still be on the way
+                # Its last words may still be on the way (from OpenAI, after the stream ends).
+                self._finish_later(call, self.late_wait if call["transcriber"] == "twilio"
+                                   else self.ending_wait)
             return
         if call["status"] not in ("ringing", "listening"):
+            return
+        if result == "completed" and call["status"] == "listening" and call["transcriber"] == "openai":
+            # Hung up on the phone: OpenAI may still be transcribing the last phrase. The
+            # stream's end finishes the call (stream()), or this does if it never comes.
+            self._set(call, "ending")
+            self._finish_later(call, self.ending_wait)
             return
         if result == "completed":
             if call["status"] == "ringing":
                 # Picked up by voicemail or call screening, and hung up before the answer webhook.
                 self._set(call, "no-answer")
             else:
-                self._set(call, "draft" if self._text(call) else "empty")
+                self._set(call, self._final(call))
         elif result in ("no-answer", "busy"):
             self._set(call, "no-answer")
         elif result in ("failed", "canceled"):
@@ -333,6 +548,20 @@ def serve_webhooks(voice: Voice, host: str, port: int) -> ThreadingHTTPServer:
     """Twilio's webhooks: POST /voice/<secret>/<answer|gather|status>?id=<call>."""
 
     class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            # Twilio's media stream (OpenAI transcription): a WebSocket on /voice/<secret>/stream.
+            from .ws import server_handshake
+            parts = urllib.parse.urlsplit(self.path).path.strip("/").split("/")
+            if not (len(parts) == 3 and parts[0] == "voice" and parts[2] == "stream"
+                    and secrets.compare_digest(parts[1], voice.secret)):
+                self.send_error(404)
+                return
+            sock = server_handshake(self)
+            if sock is None:
+                self.send_error(400)
+                return
+            voice.stream(sock)
+
         def do_POST(self):
             url = urllib.parse.urlsplit(self.path)
             parts = url.path.strip("/").split("/")

@@ -68,6 +68,7 @@ def make_handler(bridge: Bridge, device_token: str, restart=None):
         ("GET", re.compile(r"^/v1/threads/(\w+)/device/snapshot$"), "device_snapshot"),
         ("POST", re.compile(r"^/v1/threads/(\w+)/call$"), "call"),
         ("POST", re.compile(r"^/v1/projects/(\w+)/call$"), "call_new"),
+        ("POST", re.compile(r"^/v1/mic$"), "mic"),
         ("GET", re.compile(r"^/v1/calls/(\w+)/wait$"), "call_wait"),
         ("POST", re.compile(r"^/v1/calls/(\w+)/cancel$"), "call_cancel"),
         ("GET", re.compile(r"^/v1/prs$"), "prs"),
@@ -299,17 +300,25 @@ def make_handler(bridge: Bridge, device_token: str, restart=None):
                 raise BridgeError(404, "voice replies are off on this bridge")
             return bridge.voice
 
+        def _transcriber(self, b: dict) -> str | None:
+            t = b.get("transcriber")
+            return t if isinstance(t, str) and t else None
+
         def r_call(self, q, short):
-            return self._voice().start(short)
+            return self._voice().start(short, transcriber=self._transcriber(self._body()))
 
         def r_call_new(self, q, project):
             b = self._body()
             model = b.get("model")
             return self._voice().start_new(project, model=model if isinstance(model, str) and model else None,
-                                           mode=_mode(b))
+                                           mode=_mode(b), transcriber=self._transcriber(b))
+
+        def r_mic(self, q):
+            return self._voice().start_mic(transcriber=self._transcriber(self._body()))
 
         def r_call_wait(self, q, cid):
-            return self._voice().wait(cid, _int(q, "v", 0), _int(q, "timeout", 55, 0, MAX_WAIT))
+            return self._voice().wait(cid, _int(q, "v", 0), _int(q, "timeout", 55, 0, MAX_WAIT),
+                                      after=_int(q, "after", 0))
 
         def r_call_cancel(self, q, cid):
             return self._voice().cancel(cid)

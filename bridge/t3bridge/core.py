@@ -540,7 +540,10 @@ class Bridge:
                            "active_updated": None, "total": len(pinned), "settled": 0, "snoozed": 0,
                            "more": 0, "threads": [self._thread_row(t, now) for t in pinned]})
         # "Call me" can start a new thread (POST /v1/projects/<id>/call).
-        body = {"v": self.list_v, "projects": out, "call": self.voice is not None}
+        body = {"v": self.list_v, "projects": out, "call": self.voice is not None,
+                # Which transcription the calls can use: twilio, and openai if it's set up.
+                "transcribers": self.voice.transcribers if self.voice else [],
+                "transcriber": self.voice.transcriber if self.voice else None}  # the default
         notice = self.token_keeper.notice() if self.token_keeper else None
         if notice:
             body["notice"] = notice
